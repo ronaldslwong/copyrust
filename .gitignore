@@ -1,0 +1,27 @@
+# Rust build output
+/target/
+/agave/
+/yellowstone-grpc/
+
+# Node modules (if any JS tooling)
+/node_modules/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Byproducts of 'cargo test', 'cargo bench', etc.
+**/*.rs.bk
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Misc
+*.tmp
+*.bak 
