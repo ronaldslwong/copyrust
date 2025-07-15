@@ -1,0 +1,102 @@
+#grpcEndpoint = "http://us.grpc.asuga.io:10000"
+#grpcEndpoint = "http://grpc.corvus-labs.io:10101"
+#arpcEndpoint = "http://arpc.corvus-labs.io:20202"
+grpcEndpoint = "http://86.105.224.13:10101"
+arpcEndpoint = "http://86.105.224.13:20202"
+#rpcEndpoint = "http://us.rpc.asuga.io"
+#rpcEndpoint = "http://rpc.corvus-labs.io"
+rpcEndpoint = "http://86.105.224.13:8899"
+sendRPC =[
+  #"http://us.rpc.asuga.io",
+  #"http://rpc.corvus-labs.io",
+  "http://86.105.224.13:8899",
+]
+
+#birdEyeApi = "999eb784b14841818a1ca3815b957e52"
+birdEyeApi = ""
+birdEyeNumToken = 50
+
+buy_sol = 0.0001
+buy_slippage_bps = 2000
+sell_slippage_bps = 500
+
+nextblock_url = "http://fra.nextblock.io"
+nextblock_api = "entry1750053406-YRFJPBQrDGG%2FC0OdciYAYPbK%2F5dcrh%2FADDmMePTAJpg%3D"
+nextblock_cu_price = 100_000
+nextblock_buy_tip = 0.001
+nextblock_sell_tip = 0.001
+
+zeroSlotUrl = "http://ny1.0slot.trade/?api-key=b024d246496f427aa10dc750e20493ee"
+zeroslot_buy_tip = 0.001
+zeroslot_sell_tip = 0.001
+cuPrice0Slot = 100_000
+
+jitoUrl = "https://frankfurt.mainnet.block-engine.jito.wtf:443"
+jitoTip = 0.001
+cuPriceJito = 100_000
+jitoBlockEngine = "fra"
+
+
+solFilter = 0.000100
+cuPrice = 1_000_000
+
+accountsMonitor = [
+  #"BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW", #photon
+  #"suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK",
+  #"LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
+  "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
+  #"CpKdPv3L8HGcgzbBNY9tDH3CNB7DavXma86VfEfSVfEg",
+]
+
+mintsMonitor = [
+  #"5fG1KadrP3yD66gx4GgkFpvLE2UvzxwGKJLWsd1cyoNv",
+  #"DzN1qkcRdsxQRFb9yVvz73Fnu6SbD3f5oJgArVdx7Nzc", 
+  #"9j6twpYWrV1ueJok76D9YK8wJTVoG9Zy8spC7wnTpump", 
+  #"97PVGU2DzFqsAWaYU17ZBqGvQFmkqtdMywYBNPAfy8vy",
+  #"fnDj6iuSBBruq1GX5GQwxGa3MvAxiJbnPBSvHt4pump", 
+  "EdhCrv9wh2dVy7LwA4kZ3pvBRhSXzhPrYeVqX7VcsmbS",
+]
+
+nonceAc = [
+  "5RgvQRpF2W3V5f3Kt2FYNbKSvBQ3ifK1gjgEFMQ1rexo",
+  "HCHbKzJQTuqnb1oMVbsTxPm2PBohue57dZjLdehYoH6u",
+]
+
+
+##### mkts to arb ####
+meteoraMkts = 1
+pumpMkts = 1
+rayCpmm = 1
+meteoraAmm = 1
+
+
+
+
+cuPricePercentile = 0.95
+cuLimit = 700_000
+maxCUPrice = 800_000
+totalVolumeFilter = 0
+poolLiqFilter = 0
+numArbsFilter=0
+
+
+
+mintsIgnore = [
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+]
+
+####Dynamic CU####
+dynamicLoopInterval=10
+targetMinLandingRate=0.4
+targetMaxLandingRate=0.6
+priceAdjustmentFactor=1.1
+trackWallet="LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo"
+slotsToCheck = 300
+
+bufferSize=10000
+numWorkers=8 
+windowSeconds=60
+checkInterval=10
+binsToSearch=50
+
+showTx = true
