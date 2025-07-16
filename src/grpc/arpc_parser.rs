@@ -1,6 +1,6 @@
 use crate::arpc::SubscribeResponse;
 use crate::build_tx::pump_fun::{build_buy_instruction};
-use crate::build_tx::pump_swap::{build_pump_buy_instruction};
+use crate::build_tx::pump_swap::{build_pump_buy_instruction, build_pump_swap_instruction};
 use solana_program::instruction::{Instruction};
 
 use crate::build_tx::tx_builder::build_and_sign_transaction;
@@ -24,6 +24,7 @@ use crate::build_tx::ray_launch::RayLaunchAccounts;
 use crate::build_tx::ray_cpmm::build_ray_cpmm_buy_instruction;
 use crate::send_tx::zero_slot::create_instruction_zeroslot;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::build_tx::ray_cpmm::RaydiumCpmmPoolState;
 use std::sync::Once;
 
 // use chrono::Local;
@@ -60,6 +61,7 @@ pub struct TxWithPubkey {
     pub token_amount: u64,
     pub tx_type: String,
     pub ray_launch_accounts: RayLaunchAccounts,
+    pub ray_cpmm_accounts: RaydiumCpmmPoolState,
     pub ray_cpmm_pool_state: Pubkey,
     pub send_sig: String,
     pub send_time: Instant,
@@ -136,6 +138,31 @@ pub async fn process_grpc_msg(resp: &SubscribeResponse, config: &Config) -> Opti
                 quote_token_program: Pubkey::default(),
                 event_authority: Pubkey::default(),
                 program: Pubkey::default(),
+            };
+            let mut ray_cpmm_accounts = RaydiumCpmmPoolState{
+                amm_config: Pubkey::default(),
+                pool_creator: Pubkey::default(),
+                token_0_vault: Pubkey::default(),
+                token_1_vault: Pubkey::default(),
+                lp_mint: Pubkey::default(),
+                token_0_mint: Pubkey::default(),
+                token_1_mint: Pubkey::default(),
+                token_0_program: Pubkey::default(),
+                token_1_program: Pubkey::default(),
+                observation_key: Pubkey::default(),
+                auth_bump: 0,
+                status: 0,
+                lp_mint_decimals: 0,
+                mint_0_decimals: 0,
+                mint_1_decimals: 0,
+                lp_supply: 0,
+                protocol_fees_token_0: 0,
+                protocol_fees_token_1: 0,
+                fund_fees_token_0: 0,
+                fund_fees_token_1: 0,
+                open_time: 0,
+                recent_epoch: 0,
+                padding: [0; 31],
             };
 
             if account_inst == "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
@@ -264,7 +291,7 @@ pub async fn process_grpc_msg(resp: &SubscribeResponse, config: &Config) -> Opti
                             sig.clone()
                         );
                         ray_cpmm_pool_state = get_account(account_keys.clone(), instr.accounts.clone(), 3);
-                        (buy_instruction, token_amount) = build_ray_cpmm_buy_instruction(
+                        (buy_instruction, token_amount, ray_cpmm_accounts) = build_ray_cpmm_buy_instruction(
                             ray_cpmm_pool_state,
                             lamports,
                             config.buy_slippage_bps,
@@ -487,6 +514,50 @@ pub async fn process_grpc_msg(resp: &SubscribeResponse, config: &Config) -> Opti
                     }
                 }
             }
+
+            // if account_inst == "AxiomxSitiyXyPjKgJ9XSrdhsydtZsskZTEDam3PxKcC" //axiom pump swap
+            // {
+            //         let (m, s, u1, u2) = parse_tx(
+            //             &account_inst,
+            //             data,
+            //             account_keys,
+            //             account_list,
+            //             3,
+            //             4,
+            //             16,
+            //             8,
+            //             &direction,
+            //         );
+            //         mint = m;
+            //         println!("sig: {}, mint: {}, sol_size: {}, u1: {}, u2: {}", sig, m, s, u1, u2);
+            //         println!(
+            //             "[{}] - [arpc] Raydium CPMM buy detected | elapsed: {:.2?} | sig: {}",
+            //             Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+            //             start_time.elapsed(),
+            //             sig.clone()
+            //         );
+            //         ray_cpmm_pool_state = get_account(account_keys.clone(), instr.accounts.clone(), 3);
+            //         (buy_instruction, token_amount) = build_pump_swap_instruction(
+            //             lamports,
+            //             config.buy_slippage_bps,
+            //             account_keys.clone(),
+            //             instr.accounts.clone(),
+            //             u2,
+            //             u1,
+            //         );
+            //         //define fields for tx_with_pubkey
+            //         // println!("sig: {}, token_amount: {}", sig, token_amount)
+            //         if token_amount > 0 {
+            //             println!("sig: {}, token_amount: {}", sig, token_amount);
+            //             send_tx = true;
+            //             tx_type = "ray_cpmm".to_string();
+
+            //             // ARPC_MESSAGE_COUNT.fetch_add(1, Ordering::Relaxed);
+            //             // let arpc_message_count = get_arpc_message_count();
+            //             // println!("arpc_message_count: {:?}", arpc_message_count);
+
+            //         }
+            // }
             // if send_tx && get_arpc_message_count() == 1 {
             if send_tx {
 
@@ -539,6 +610,7 @@ pub async fn process_grpc_msg(resp: &SubscribeResponse, config: &Config) -> Opti
                     token_amount: token_amount,
                     tx_type: tx_type,
                     ray_launch_accounts: ray_launch_accounts,
+                    ray_cpmm_accounts: ray_cpmm_accounts,
                     send_sig: "".to_string(),
                     send_time: Instant::now(),
                     send_slot: slot,

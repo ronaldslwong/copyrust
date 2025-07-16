@@ -10,8 +10,10 @@ use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::signature::Signer;
 use crate::send_tx::rpc::{initialize_send_rpc_clients, keep_send_rpc_connections_warm};
 use crate::utils::logger::setup_event_logger;
+use crate::triton_grpc::crossbeam_worker::setup_crossbeam_worker;
 // use crate::send_tx::jito::init_jito_grpc_sender;
 pub static GLOBAL_RPC_CLIENT: OnceCell<RpcClient> = OnceCell::new();
+
 
 pub async fn initialize() -> (Config, Vec<DexPairData>) {
     println!("Initializing...");
@@ -43,6 +45,9 @@ pub async fn initialize() -> (Config, Vec<DexPairData>) {
 
     setup_event_logger();
     println!("Event logger initialized");
+
+    setup_crossbeam_worker();
+    println!("Crossbeam worker initialized");
 
     // init_jito_grpc_sender(&config.jito_url).await;
     // println!("Jito gRPC sender initialized");

@@ -40,6 +40,9 @@ thiserror = "2.0.12"
 solana-metrics = "2.3.3"
 num-bigint = "0.4.6"
 num-traits = "0.2"
+crossbeam = "0.8"
+core_affinity = "0.8"
+
 
 [build-dependencies]
 tonic-build = "0.13.1"

@@ -10,6 +10,7 @@ use tokio::time::{sleep, Duration};
 use tonic::transport::Endpoint;
 use crate::init::wallet_loader::get_wallet_keypair;
 use solana_sdk::signature::Signer;
+use core_affinity;
 
 
 // use chrono::Utc;
@@ -18,6 +19,13 @@ pub async fn subscribe_and_print_triton(
     endpoint: &str,
     config: Arc<Config>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Pin this async runtime thread to core 1 for lowest latency
+    if let Some(cores) = core_affinity::get_core_ids() {
+        if cores.len() > 1 {
+            core_affinity::set_for_current(cores[0]);
+            println!("[client.rs] Pinned to core 0");
+        }
+    }
     println!("[Triton] Connecting to endpoint: {}", endpoint);
     let channel_endpoint = Endpoint::from_shared(endpoint.to_string())?
         .http2_keep_alive_interval(Duration::from_secs(10))
@@ -91,7 +99,7 @@ pub async fn subscribe_and_print_triton(
         tokio::spawn(async move {
             // let now = Utc::now();
             // println!("[{}] - [Triton] Spawning message handler", now.format("%Y-%m-%d %H:%M:%S%.3f"));
-            process_triton_message(&message).await;
+            process_triton_message(&message);
         });
     }
 

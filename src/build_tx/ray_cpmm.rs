@@ -86,6 +86,37 @@ pub struct RaydiumCpmmPoolState {
     pub padding: [u64; 31],
 }
 
+impl Default for RaydiumCpmmPoolState {
+    fn default() -> Self {
+        Self {
+            // initialize all fields with their default values
+            // e.g., field1: Default::default(), field2: 0, ...
+            amm_config: Pubkey::default(),
+            pool_creator: Pubkey::default(),
+            token_0_vault: Pubkey::default(),
+            token_1_vault: Pubkey::default(),
+            lp_mint: Pubkey::default(),
+            token_0_mint: Pubkey::default(),
+            token_1_mint: Pubkey::default(),
+            token_0_program: Pubkey::default(),
+            token_1_program: Pubkey::default(),
+            observation_key: Pubkey::default(),
+            auth_bump: 0,
+            status: 0,
+            lp_mint_decimals: 0,
+            mint_0_decimals: 0,
+            mint_1_decimals: 0,
+            lp_supply: 0,
+            protocol_fees_token_0: 0,
+            protocol_fees_token_1: 0,
+            fund_fees_token_0: 0,
+            fund_fees_token_1: 0,
+            open_time: 0,
+            recent_epoch: 0,
+            padding: [0; 31],
+        }
+    }
+}
 
 /// Helper to get the discriminator for buy/sell
 fn get_discriminator(direction: SwapDirection) -> [u8; 8] {
@@ -133,7 +164,7 @@ pub fn build_ray_cpmm_buy_instruction(
     amount: u64,
     slippage_basis_points: u64,
     mint: Pubkey,
-) -> (Instruction, u64) {
+) -> (Instruction, u64, RaydiumCpmmPoolState) {
     let rpc_client = GLOBAL_RPC_CLIENT.get().expect("RPC client not initialized");
 
     let slippage_factor = 1.0+slippage_basis_points as f64 /10000.0;
@@ -153,12 +184,12 @@ pub fn build_ray_cpmm_buy_instruction(
         Ok(data) => data,
         Err(e) => {
             eprintln!("Failed to fetch account data: {}", e);
-            return (instruction, 0);
+            return (instruction, 0, RaydiumCpmmPoolState::default());
         }
     };
     if pool_state_data.iter().all(|&b| b == 0) {
         println!("pool_state_data is all zeros!");
-        return (instruction, 0); // or return an error, or handle as needed
+        return (instruction, 0, RaydiumCpmmPoolState::default()); // or return an error, or handle as needed
     }
 
     let pool_ac_detail = RaydiumCpmmPoolState::deserialize(&mut &pool_state_data[8..]).unwrap();
@@ -179,7 +210,7 @@ pub fn build_ray_cpmm_buy_instruction(
     // println!("amount: {}, limit_quote_amount: {}, limit_quote_amount_slippage: {}", amount, limit_quote_amount, (limit_quote_amount as f64*slippage_factor) as u64);
     let instruction = build_ray_cpmm_swap_instruction(pool_state, pool_ac_detail, SwapDirection::Buy, (amount as f64*slippage_factor) as u64, token_quote_amount);
     println!("token_quote_amount: {}", token_quote_amount);
-    (instruction, token_quote_amount)
+    (instruction, token_quote_amount, pool_ac_detail)
 }
 
 pub fn build_ray_cpmm_sell_instruction(
@@ -265,6 +296,19 @@ pub fn build_ray_cpmm_sell_instruction_with_pool_state(
     let instruction = build_ray_cpmm_swap_instruction(pool_state, pool_ac_detail, SwapDirection::Sell, amount, (limit_quote_amount as f64*slippage_factor) as u64);
     (instruction)
 }
+
+pub fn build_ray_cpmm_sell_instruction_no_quote(
+    // base_vault: Pubkey,
+    // quote_vault: Pubkey,
+    pool_state: Pubkey,
+    pool_ac_detail: RaydiumCpmmPoolState,
+    amount: u64,
+) -> (Instruction) {
+
+    let instruction = build_ray_cpmm_swap_instruction(pool_state, pool_ac_detail, SwapDirection::Sell, amount, 0);
+    (instruction)
+}
+
 
 
 /// Build a PumpSwap instruction (buy or sell)
