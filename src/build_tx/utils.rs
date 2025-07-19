@@ -21,13 +21,17 @@ pub enum SwapDirection {
 }
 
 
-pub fn get_account(
-    account_keys: Vec<Vec<u8>>,
-    accounts: Vec<u8>,
-    index: u8,
-) -> Pubkey {
-    let idx = *accounts.get(index as usize).unwrap_or(&0) as usize;
-    Pubkey::try_from(account_keys.get(idx as usize).unwrap().as_slice()).unwrap()
+pub fn get_account(account_keys: &[Vec<u8>], accounts: &[u8], index: usize) -> Pubkey {
+    if accounts.len() > index {
+        let idx = accounts[index] as usize;
+        if account_keys.len() > idx {
+            Pubkey::try_from(account_keys[idx].as_slice()).unwrap_or_default()
+        } else {
+            Pubkey::default()
+        }
+    } else {
+        Pubkey::default()
+    }
 }
 
 pub fn get_pool_accounts(

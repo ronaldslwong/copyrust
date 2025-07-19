@@ -13,6 +13,7 @@ use crate::init::wallet_loader::get_wallet_keypair;
 use crate::utils::ata::create_ata;
 use solana_sdk::signature::Signer;
 use solana_client::rpc_config::RpcSendTransactionConfig;
+use solana_sdk::hash::Hash;
 
 
 // Global slice of RPC clients
@@ -28,8 +29,16 @@ pub fn initialize_send_rpc_clients(config: &Config) {
     let _ = GLOBAL_SEND_RPC_CLIENTS.set(Arc::new(RwLock::new(clients)));
 }
 
-/// Periodically call get_health on all send RPC clients every 30 seconds to keep connections warm
-pub async fn keep_send_rpc_connections_warm() {
+pub static GLOBAL_LATEST_BLOCKHASH: once_cell::sync::OnceCell<RwLock<Hash>> = once_cell::sync::OnceCell::new();
+
+// Initialize the global blockhash at file load time
+#[allow(dead_code)]
+fn _init_blockhash_once() {
+    let _ = GLOBAL_LATEST_BLOCKHASH.set(RwLock::new(Hash::default()));
+}
+
+/// Periodically fetch and cache the latest blockhash from the first send RPC client
+pub async fn keep_blockhash_fresh() {
     let clients = GLOBAL_SEND_RPC_CLIENTS
         .get()
         .expect("Send RPC clients not initialized")
@@ -38,22 +47,30 @@ pub async fn keep_send_rpc_connections_warm() {
     loop {
         interval.tick().await;
         let clients_guard = clients.read().await;
-        for (i, client) in clients_guard.iter().enumerate() {
-            let client = client.clone();
-            tokio::spawn(async move {
-                match client.get_health() {
-                    Ok(health) => {
-                        // if health != "ok" {
-                        //     eprintln!("[SendRPC {}] Health not ok: {}", i, health);
-                        // }
-                    }
-                    Err(e) => {
-                        // eprintln!("[SendRPC {}] Health check failed: {}", i, e);
+        if let Some(client) = clients_guard.get(0) {
+            match client.get_latest_blockhash() {
+                Ok(blockhash) => {
+                    if let Some(lock) = GLOBAL_LATEST_BLOCKHASH.get() {
+                        let mut hash_guard = lock.write().await;
+                        *hash_guard = blockhash;
                     }
                 }
-            });
+                Err(e) => {
+                    eprintln!("[Blockhash] Failed to fetch latest blockhash: {}", e);
+                }
+            }
         }
     }
+}
+
+/// Get the current cached blockhash (clone)
+pub async fn get_cached_blockhash() -> Hash {
+    GLOBAL_LATEST_BLOCKHASH
+        .get()
+        .expect("Blockhash not initialized")
+        .read()
+        .await
+        .clone()
 }
 
 /// Send a transaction by looping through the list of send RPCs and sending via RPC call

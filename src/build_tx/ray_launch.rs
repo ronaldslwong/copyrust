@@ -8,12 +8,12 @@ use crate::init::initialize::GLOBAL_RPC_CLIENT;
 use std::error::Error;
 use crate::build_tx::pump_swap::SwapDirection;
 use crate::init::wallet_loader::get_wallet_keypair;
-use crate::build_tx::pump_swap::get_account;
+use crate::build_tx::utils::get_account;
 use solana_sdk::signature::Signer;
 use solana_program::instruction::{AccountMeta, Instruction};
 use num_bigint::BigUint;
-use num_traits::cast::ToPrimitive;
-use num_traits::Zero;
+use crate::constants::consts;
+use crate::constants::raydium_launchpad;
 
 #[derive(Debug, Clone)]
 pub struct RaydiumPoolRealReserves {
@@ -48,20 +48,6 @@ impl RaydiumPoolRealReserves {
         })
     }
 }
-pub mod ray_launch_constants {
-    use solana_program::pubkey;
-    use solana_program::pubkey::Pubkey;
-
-    pub const RAY_LAUNCH_PROGRAM_ID: Pubkey = pubkey!("LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj");
-    pub const RAY_LAUNCH_AUTHORITY: Pubkey = pubkey!("WLHv2UAZm6z4KyaaELi5pjdbJh6RESMva1Rnn8pJVVh");
-    // Add other relevant constants as needed
-    pub const RAY_LAUNCH_GLOBAL_CONFIG: Pubkey = pubkey!("6s1xP3hpbAfFoNtUNF8mfHsjr2Bd97JxFJRWLbL6aHuX");
-    pub const RAY_LAUNCH_PROGRAM_CONFIG: Pubkey = pubkey!("FfYek5vEz23cMkWsdJwG2oa6EphsvXSHrGpdALN4g6W1");
-    
-    pub const RAY_LAUNCH_EVENT_AUTHORITY: Pubkey = pubkey!("2DPAtwB8L12vrMRExbLuyGnC7n2J5LNoZQSejeQGpwkr");
-    pub const WSOL: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
-}
-
 #[derive(PartialEq, Copy, Clone, Debug)]
 
 pub struct RayLaunchAccounts {
@@ -97,12 +83,53 @@ pub struct RayLaunchAccounts {
     pub program: Pubkey,
 }
 
+impl Default for RayLaunchAccounts {
+    fn default() -> Self {
+        RayLaunchAccounts {
+            payer: Pubkey::default(),
+            authority: Pubkey::default(),
+            global_config: Pubkey::default(),
+            platform_config: Pubkey::default(),
+            pool_state: Pubkey::default(),
+            user_base_token: Pubkey::default(),
+            user_quote_token: Pubkey::default(),
+            base_vault: Pubkey::default(),
+            quote_vault: Pubkey::default(),
+            base_token_mint: Pubkey::default(),
+            quote_token_mint: Pubkey::default(),
+            base_token_program: Pubkey::default(),
+            quote_token_program: Pubkey::default(),
+            event_authority: Pubkey::default(),
+            program: Pubkey::default(),
+        }
+    }
+}
+
+pub fn default_ray_launch_accounts() -> RayLaunchAccounts {
+    RayLaunchAccounts::default()
+}
+
 
 pub struct PoolBaseAmount {
     pub total_sell_a: BigUint,
     pub total_fund_raising_b: BigUint,
     pub real_a: BigUint,
     pub real_b: BigUint,
+}
+
+impl Default for PoolBaseAmount {
+    fn default() -> Self {
+        PoolBaseAmount {
+            total_sell_a: BigUint::default(),
+            total_fund_raising_b: BigUint::default(),
+            real_a: BigUint::default(),
+            real_b: BigUint::default(),
+        }
+    }
+}
+
+pub fn default_pool_base_amount() -> PoolBaseAmount {
+    PoolBaseAmount::default()
 }
 
 
@@ -136,8 +163,8 @@ pub fn get_ray_launch_swap_amount(
     if pool_data.real_a == 0 {
         return Err("zero base amount".into());
     }
-    println!("pool_data.real_base: {}", pool_data.real_a);
-    println!("pool_data.real_quote: {}", pool_data.real_b);
+    // println!("pool_data.real_base: {}", pool_data.real_a);
+    // println!("pool_data.real_quote: {}", pool_data.real_b);
     let adjusted_price = match direction {
         SwapDirection::Buy => ((pool_data.virtual_a - pool_data.real_a-target_token_buy) as f64 * swap_amount as f64) / ((pool_data.virtual_b + pool_data.real_b + target_sol_buy) as f64 + swap_amount as f64) ,
         SwapDirection::Sell => ((pool_data.virtual_b + pool_data.real_b-target_sol_buy) as f64 * swap_amount as f64) / ((pool_data.virtual_a - pool_data.real_a + target_token_buy) as f64 + swap_amount as f64) ,
@@ -145,40 +172,54 @@ pub fn get_ray_launch_swap_amount(
     Ok(adjusted_price as u64)
 }
 
-pub fn build_ray_launch_buy_instruction(
+// pub fn build_ray_launch_buy_instruction(
+//     // base_vault: Pubkey,
+//     // quote_vault: Pubkey,
+//     amount: u64,
+//     slippage_basis_points: u64,
+//     accounts: RayLaunchAccounts,
+//     target_sol_buy: u64,
+//     target_token_buy: u64,
+// ) -> (Instruction, u64) {
+
+
+//     let slippage_factor = 1.0+slippage_basis_points as f64 /10000.0;
+
+//     let limit_quote_amount = match get_ray_launch_swap_amount(
+//         SwapDirection::Buy,
+//         accounts.pool_state,
+//         amount,
+//         target_sol_buy,
+//         target_token_buy,
+//     ) {
+//         Ok(val) => val,
+//         Err(e) => {
+//             eprintln!("Could not calculate buy limit_quote_amount: {}", e);
+//             // handle gracefully, e.g. return, skip, or set a default value
+//             return (Instruction::new_with_bincode(raydium_launchpad::RAY_LAUNCH_PROGRAM_ID, &[0u8; 32], vec![]), 0);
+//         }
+//     };
+//     // println!("amount: {}, limit_quote_amount: {}, limit_quote_amount_slippage: {}", amount, limit_quote_amount, (limit_quote_amount as f64*slippage_factor) as u64);
+
+//     let instruction = build_ray_launch_swap_instruction(accounts, SwapDirection::Buy, limit_quote_amount, (amount as f64*slippage_factor) as u64);
+//     (instruction, limit_quote_amount)
+// }
+
+pub fn build_ray_launch_buy_instruction_no_quote(
     // base_vault: Pubkey,
     // quote_vault: Pubkey,
-    amount: u64,
+    sol_amount: u64,
+    token_amount: u64,
     slippage_basis_points: u64,
-    accounts: RayLaunchAccounts,
-    target_sol_buy: u64,
-    target_token_buy: u64,
-) -> (Instruction, u64) {
-
+    accounts: &RayLaunchAccounts,
+) -> (Instruction) {
 
     let slippage_factor = 1.0+slippage_basis_points as f64 /10000.0;
 
-    // println!("base_vault: {}", base_vault);
-    // println!("quote_vault: {}", quote_vault);
-    println!("pool_state: {}", accounts.pool_state.to_string());
-    let limit_quote_amount = match get_ray_launch_swap_amount(
-        SwapDirection::Buy,
-        accounts.pool_state,
-        amount,
-        target_sol_buy,
-        target_token_buy,
-    ) {
-        Ok(val) => val,
-        Err(e) => {
-            eprintln!("Could not calculate buy limit_quote_amount: {}", e);
-            // handle gracefully, e.g. return, skip, or set a default value
-            return (Instruction::new_with_bincode(ray_launch_constants::RAY_LAUNCH_PROGRAM_ID, &[0u8; 32], vec![]), 0);
-        }
-    };
-    println!("amount: {}, limit_quote_amount: {}, limit_quote_amount_slippage: {}", amount, limit_quote_amount, (limit_quote_amount as f64*slippage_factor) as u64);
+    // println!("amount: {}, limit_quote_amount: {}, limit_quote_amount_slippage: {}", amount, limit_quote_amount, (limit_quote_amount as f64*slippage_factor) as u64);
 
-    let instruction = build_ray_launch_swap_instruction(accounts, SwapDirection::Buy, limit_quote_amount, (amount as f64*slippage_factor) as u64);
-    (instruction, limit_quote_amount)
+    let instruction = build_ray_launch_swap_instruction(accounts, SwapDirection::Buy, token_amount, (sol_amount as f64*slippage_factor) as u64);
+    (instruction)
 }
 
 pub fn build_ray_launch_sell_instruction(
@@ -186,7 +227,7 @@ pub fn build_ray_launch_sell_instruction(
     // quote_vault: Pubkey,
     amount: u64,
     slippage_basis_points: u64,
-    accounts: RayLaunchAccounts,
+    accounts: &RayLaunchAccounts,
 ) -> (Instruction) {
 
 
@@ -194,7 +235,7 @@ pub fn build_ray_launch_sell_instruction(
 
     // println!("base_vault: {}", base_vault);
     // println!("quote_vault: {}", quote_vault);
-    println!("pool_state: {}", accounts.pool_state.to_string());
+    // println!("pool_state: {}", accounts.pool_state.to_string());
     let limit_quote_amount = get_ray_launch_swap_amount(
         SwapDirection::Sell,
         accounts.pool_state,
@@ -202,14 +243,14 @@ pub fn build_ray_launch_sell_instruction(
         0,
         0,
     ).expect("Failed to calculate buy limit_quote_amount");
-    println!("amount: {}, limit_quote_amount: {}, limit_quote_amount_slippage: {}", amount, limit_quote_amount, (limit_quote_amount as f64*slippage_factor) as u64);
-    let instruction = build_ray_launch_swap_instruction(accounts, SwapDirection::Sell, amount, (limit_quote_amount as f64*slippage_factor) as u64);
+    // println!("amount: {}, limit_quote_amount: {}, limit_quote_amount_slippage: {}", amount, limit_quote_amount, (limit_quote_amount as f64*slippage_factor) as u64);
+    let instruction = build_ray_launch_swap_instruction(&accounts, SwapDirection::Sell, amount, (limit_quote_amount as f64*slippage_factor) as u64);
     (instruction)
 }
 
 /// Build a PumpSwap instruction (buy or sell)
 pub fn build_ray_launch_swap_instruction(
-    accounts: RayLaunchAccounts,
+    accounts: &RayLaunchAccounts,
     direction: SwapDirection,
     limit_quote_amount: u64,
     amount: u64,
@@ -241,7 +282,7 @@ pub fn build_ray_launch_swap_instruction(
         AccountMeta::new_readonly(accounts.program, false),
     ];
     Instruction {
-        program_id: ray_launch_constants::RAY_LAUNCH_PROGRAM_ID,
+        program_id: raydium_launchpad::RAY_LAUNCH_PROGRAM_ID,
         accounts: metas,
         data: full_data,
     }
@@ -249,28 +290,28 @@ pub fn build_ray_launch_swap_instruction(
 
 
 pub fn get_instruction_accounts(
-    account_keys: Vec<Vec<u8>>,
-    accounts: Vec<u8>,
+    account_keys: &[Vec<u8>],
+    accounts: &[u8],
 ) -> RayLaunchAccounts {
-    let mint = get_account(account_keys.clone(), accounts.clone(), 9);
+    let mint = get_account(account_keys, accounts, 9);
     let base_ata = spl_associated_token_account::get_associated_token_address(&get_wallet_keypair().pubkey(), &mint);
-    let quote_ata = spl_associated_token_account::get_associated_token_address(&get_wallet_keypair().pubkey(), &ray_launch_constants::WSOL);
+    let quote_ata = spl_associated_token_account::get_associated_token_address(&get_wallet_keypair().pubkey(), &consts::WSOL);
 
     RayLaunchAccounts {
         payer: get_wallet_keypair().pubkey(),
-        authority: ray_launch_constants::RAY_LAUNCH_AUTHORITY,
-        global_config: ray_launch_constants::RAY_LAUNCH_GLOBAL_CONFIG,
-        platform_config: ray_launch_constants::RAY_LAUNCH_PROGRAM_CONFIG,
-        pool_state: get_account(account_keys.clone(), accounts.clone(), 4),
+        authority: raydium_launchpad::RAY_LAUNCH_AUTHORITY,
+        global_config: raydium_launchpad::RAY_LAUNCH_GLOBAL_CONFIG,
+        platform_config: get_account(account_keys, accounts, 3),
+        pool_state: get_account(account_keys, accounts, 4),
         user_base_token: base_ata,
         user_quote_token: quote_ata,
-        base_vault: get_account(account_keys.clone(), accounts.clone(), 7),
-        quote_vault: get_account(account_keys.clone(), accounts.clone(), 8),
+        base_vault: get_account(account_keys, accounts, 7),
+        quote_vault: get_account(account_keys, accounts, 8),
         base_token_mint: mint,
-        quote_token_mint: ray_launch_constants::WSOL,
+        quote_token_mint: consts::WSOL,
         base_token_program: spl_token::ID,
         quote_token_program: spl_token::ID,
-        event_authority: ray_launch_constants::RAY_LAUNCH_EVENT_AUTHORITY,
-        program: ray_launch_constants::RAY_LAUNCH_PROGRAM_ID,
+        event_authority: raydium_launchpad::RAY_LAUNCH_EVENT_AUTHORITY,
+        program: raydium_launchpad::RAY_LAUNCH_PROGRAM_ID,
     }
 }

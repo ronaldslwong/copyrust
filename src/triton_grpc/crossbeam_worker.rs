@@ -11,11 +11,13 @@ use solana_sdk::instruction::Instruction;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use chrono::Utc;
 use crate::utils::logger::{log_event, setup_event_logger, EventType};
-use tokio::time::{sleep, Duration};
-use crate::grpc::arpc_parser::GLOBAL_TX_MAP;
-use crate::build_tx::pump_fun::{build_sell_instruction, BondingCurve};
+use crate::utils::rt_scheduler::{set_realtime_priority, RealtimePriority};
+// use tokio::time::{sleep, Duration};
+use crate::grpc::arpc_worker::GLOBAL_TX_MAP;
+use crate::build_tx::pump_fun::{build_sell_instruction, get_bonding_curve_state, BondingCurve};
 use crate::init::wallet_loader::get_wallet_keypair;
-use crate::build_tx::pump_swap::build_pump_sell_instruction_raw;
+use crate::build_tx::pump_swap::build_pump_sell_instruction;
+
 use crate::build_tx::ray_launch::build_ray_launch_sell_instruction;
 use crate::build_tx::ray_cpmm::{build_ray_cpmm_sell_instruction, build_ray_cpmm_sell_instruction_no_quote};
 use crate::send_tx::rpc::send_tx_via_send_rpcs;
@@ -26,6 +28,30 @@ use crate::config_load::GLOBAL_CONFIG;
 use crate::init::initialize::GLOBAL_RPC_CLIENT;
 use borsh::BorshDeserialize;
 use std::time::Instant;
+use std::thread;
+use std::time::Duration;
+
+// Add global counters for monitoring triton worker performance
+use std::sync::atomic::{AtomicUsize, Ordering};
+static TRITON_MESSAGES_RECEIVED: AtomicUsize = AtomicUsize::new(0);
+static TRITON_TRANSACTIONS_SENT: AtomicUsize = AtomicUsize::new(0);
+static TRITON_TRANSACTIONS_FOUND: AtomicUsize = AtomicUsize::new(0);
+static TRITON_ERRORS: AtomicUsize = AtomicUsize::new(0);
+
+pub fn get_triton_stats() -> (usize, usize, usize, usize) {
+    (
+        TRITON_MESSAGES_RECEIVED.load(Ordering::Relaxed),
+        TRITON_TRANSACTIONS_SENT.load(Ordering::Relaxed),
+        TRITON_TRANSACTIONS_FOUND.load(Ordering::Relaxed),
+        TRITON_ERRORS.load(Ordering::Relaxed),
+    )
+}
+
+// Create a global Tokio runtime for async operations
+use once_cell::sync::Lazy;
+static ASYNC_RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
+    tokio::runtime::Runtime::new().expect("Failed to create async runtime")
+});
 
 #[derive(Debug, Clone)]
 pub struct ParsedTx {
@@ -43,29 +69,87 @@ pub fn setup_crossbeam_worker() {
     let (tx, rx) = unbounded::<ParsedTx>();
     PARSED_TX_SENDER.set(tx).unwrap();
     std::thread::spawn(move || {
+        // Pin this worker thread to core 2 for lowest latency
+        if let Some(cores) = core_affinity::get_core_ids() {
+            if cores.len() > 2 {
+                core_affinity::set_for_current(cores[2]);
+                println!("[triton crossbeam worker] Pinned to core 2");
+            }
+        }
+        
+        // Set critical real-time priority for processing (highest priority)
+        if let Err(e) = set_realtime_priority(RealtimePriority::Critical) {
+            eprintln!("[triton crossbeam worker] Failed to set real-time priority: {}", e);
+        }
+        
         while let Ok(parsed) = rx.recv() {
+            TRITON_MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
+            
             // Heavy processing here (sync, fast)
             let sig_detect = if let Some(sig) = parsed.sig_bytes.clone() {
                 bs58::encode(sig).into_string()
             } else {
                 String::new()
             };
-            let config = GLOBAL_CONFIG.get().expect("Config not initialized");
+
+            let now = Utc::now();
+            println!("[{}] - [TRITON] Processing message for sig: {} (total received: {})", 
+                now.format("%Y-%m-%d %H:%M:%S%.3f"), 
+                sig_detect, 
+                TRITON_MESSAGES_RECEIVED.load(Ordering::Relaxed));
+
+            if parsed.detection_time.is_none() {
+                TRITON_ERRORS.fetch_add(1, Ordering::Relaxed);
+                eprintln!("[crossbeam_worker] Error: detection_time is None for sig_detect={}", sig_detect);
+            }
+
+            let config = match GLOBAL_CONFIG.get() {
+                Some(cfg) => cfg,
+                None => {
+                    eprintln!("[crossbeam_worker] Error: Config not initialized");
+                    continue;
+                }
+            };
 
             // println!("[crossbeam worker] Received: {:?}, sig_bytes: {:?}", parsed, sig_detect);
             let mut found = None;
             if parsed.is_signer {
+                let map_size = GLOBAL_TX_MAP.len();
+                println!("[{}] - [TRITON] Searching GLOBAL_TX_MAP for sig: {} (map size: {})", 
+                    Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect, map_size);
+                
                 for entry in GLOBAL_TX_MAP.iter() {
                     if entry.value().send_sig.trim_matches('\"') == sig_detect {
                         found = Some(entry.value().clone()); // or entry.key().clone(), or both
+                        TRITON_TRANSACTIONS_FOUND.fetch_add(1, Ordering::Relaxed);
+                        println!("[{}] - [TRITON] FOUND transaction in map for sig: {} (tx_type: {})", 
+                            Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect, entry.value().tx_type);
                         break;
                     }
+                }
+                
+                if found.is_none() {
+                    println!("[{}] - [TRITON] NOT FOUND transaction in map for sig: {} (map size: {})", 
+                        Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect, map_size);
                 }
                 if let Some(tx_with_pubkey) = found {
                     let now = Utc::now();
                     let mut send_tx: bool = false;
 
-                    sleep(Duration::from_secs(4));
+                    // let sig_detect = if let Some(sig) = parsed.sig_bytes.clone() {
+                    //     bs58::encode(sig).into_string()
+                    // } else {
+                    //     String::new()
+                    // };
+                    let sig_bytes = parsed.sig_bytes.as_ref().unwrap();
+                    log_event(
+                        EventType::GrpcLanded,
+                        sig_bytes,
+                        tx_with_pubkey.send_time,
+                        Some((parsed.slot.unwrap() - tx_with_pubkey.send_slot) as i64)
+                    );
+
+                    thread::sleep(Duration::from_secs(4));
                     let mut sell_instruction: Instruction = Instruction{
                         program_id: Pubkey::new_unique(),
                         accounts: vec![],
@@ -75,20 +159,26 @@ pub fn setup_crossbeam_worker() {
 
                     //check if pumpfun token has migrated or not, if true, switch to pumpswap sell logic
                     let rpc: &solana_client::rpc_client::RpcClient = GLOBAL_RPC_CLIENT.get().expect("RPC client not initialized");
+                    let mut bonding_curve_state = BondingCurve::default();
                     
                     if tx_type == "pumpfun" {
-                        println!("bonding curve: {:?}", tx_with_pubkey.bonding_curve);
-                        let account_data = rpc.get_account_data(&tx_with_pubkey.bonding_curve).unwrap();
-                        let bonding_curve_state = BondingCurve::deserialize(&mut &account_data[8..]).unwrap();
+                        bonding_curve_state = get_bonding_curve_state(&tx_with_pubkey.pump_fun_accounts);
+                        
                         if bonding_curve_state.complete {
-                            tx_type = "pumpswap".to_string();
+                            tx_type = "pump_swap".to_string();
                             println!("[{}] - [grpc] Pumpfun token has migrated to pumpswap - applying pumpswap sell logic", now.format("%Y-%m-%d %H:%M:%S%.3f"));
                         }
                     }
 
-                    if tx_type == "raylaunch" {
+                    if tx_type == "ray_launch" {
                         let pool_state = tx_with_pubkey.ray_launch_accounts.pool_state;
-                        let res = rpc.get_account_data(&pool_state).unwrap();
+                        let res = match rpc.get_account_data(&pool_state) {
+                            Ok(data) => data,
+                            Err(e) => {
+                                eprintln!("[crossbeam_worker] Error: get_account_data (raylaunch) failed: {:?}", e);
+                                continue;
+                            }
+                        };
                         let status = res[17];
                         let migrate = res[20];
                         
@@ -103,28 +193,26 @@ pub fn setup_crossbeam_worker() {
 
                     if tx_type == "pumpfun" {
                         sell_instruction = build_sell_instruction(
-                            get_wallet_keypair().pubkey(),
-                            tx_with_pubkey.mint,
-                            tx_with_pubkey.bonding_curve,
                             tx_with_pubkey.token_amount,
                             config.sell_slippage_bps,
-                        )
-                        .unwrap();
-                        send_tx = true;
-                    }
-                    if tx_type == "pumpswap" {
-                        sell_instruction = build_pump_sell_instruction_raw(
-                            tx_with_pubkey.token_amount,
-                            config.sell_slippage_bps,
-                            tx_with_pubkey.mint,
+                            &tx_with_pubkey.pump_fun_accounts,
+                            bonding_curve_state,
                         );
                         send_tx = true;
                     }
-                    if tx_type == "raylaunch" {
+                    if tx_type == "pump_swap" {
+                        sell_instruction = build_pump_sell_instruction(
+                            tx_with_pubkey.token_amount,
+                            config.sell_slippage_bps,
+                            &tx_with_pubkey.pump_swap_accounts,
+                        );
+                        send_tx = true;
+                    }
+                    if tx_type == "ray_launch" {
                         sell_instruction = build_ray_launch_sell_instruction(
                             tx_with_pubkey.token_amount,
                             config.sell_slippage_bps,
-                            tx_with_pubkey.ray_launch_accounts,
+                            &tx_with_pubkey.ray_launch_accounts,
                         );
                         send_tx = true;
                     }
@@ -146,6 +234,9 @@ pub fn setup_crossbeam_worker() {
                     }
 
                     if send_tx {
+                        println!("[{}] - [TRITON] Building sell transaction for sig: {} (tx_type: {})", 
+                            Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect, tx_type);
+                        
                         let compute_budget_instruction = create_instruction(
                             config.cu_limit,
                             config.cu_price0_slot,
@@ -160,34 +251,105 @@ pub fn setup_crossbeam_worker() {
                             get_wallet_keypair(),
                         )
                         .ok();
-                        // println!("Signed tx, elapsed: {:.2?}", start_time.elapsed());
-                        // let sig = send_tx_nextblock(&tx.unwrap(), &config.nextblock_api)
-                        //     .await
-                        //     .unwrap();
-                        let rt = tokio::runtime::Runtime::new().unwrap();
-                        let sig = rt.block_on(send_tx_zeroslot(&tx.unwrap())).unwrap();
-                        println!(
-                            "[{}] - sell tx sent with sig: {}",
-                            now.format("%Y-%m-%d %H:%M:%S%.3f"),
-                            sig
-                        );
+                        
+                        if let Some(signed_tx) = tx {
+                            println!("[{}] - [TRITON] SUCCESS - Built sell transaction for sig: {}", 
+                                Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect);
+                            
+                            // Send transaction asynchronously without blocking the worker thread
+                            let sig_detect_clone = sig_detect.clone();
+                            let signed_tx_clone = signed_tx.clone();
+                            let sig_bytes_clone = sig_bytes.clone();
+                            
+                            ASYNC_RUNTIME.spawn(async move {
+                                let send_start = Instant::now();
+                                match send_tx_zeroslot(&signed_tx_clone).await {
+                                    Ok(sig) => {
+                                        TRITON_TRANSACTIONS_SENT.fetch_add(1, Ordering::Relaxed);
+                                        let send_time = send_start.elapsed();
+                                        println!(
+                                            "[{}] - [TRITON] SUCCESS - Sell tx sent with sig: {} (send time: {:.2?}, total sent: {})",
+                                            Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                                            sig,
+                                            send_time,
+                                            TRITON_TRANSACTIONS_SENT.load(Ordering::Relaxed)
+                                        );
+                                        // Remove the processed transaction from GLOBAL_TX_MAP to prevent memory leaks
+                                        GLOBAL_TX_MAP.remove(&sig_bytes_clone);
+                                    }
+                                    Err(e) => {
+                                        TRITON_ERRORS.fetch_add(1, Ordering::Relaxed);
+                                        eprintln!("[{}] - [TRITON] ERROR - Failed to send sell tx for sig: {} - Error: {:?}", 
+                                            Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect_clone, e);
+                                    }
+                                }
+                            });
+                        } else {
+                            TRITON_ERRORS.fetch_add(1, Ordering::Relaxed);
+                            eprintln!("[{}] - [TRITON] ERROR - Failed to build sell transaction for sig: {}", 
+                                Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect);
+                        }
+                    } else {
+                        println!("[{}] - [TRITON] No sell transaction to build for sig: {} (tx_type: {})", 
+                            Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect, tx_type);
                     }
                 }
 
             } else { //send tx
-                if let Some(mut tx_with_pubkey) = GLOBAL_TX_MAP.get_mut(&sig_detect) {
-                    let rt = tokio::runtime::Runtime::new().unwrap();
-                    let sig = rt.block_on(send_tx_zeroslot(&tx_with_pubkey.tx)).unwrap();
-                    let now = Utc::now();
-                    println!(
-                        "[{}] - Sent tx with sig: {} | elapsed: {:.2?}",
-                        now.format("%Y-%m-%d %H:%M:%S%.3f"),
-                        sig,
-                        parsed.detection_time.unwrap().elapsed()
-                    );
-                    tx_with_pubkey.send_sig = sig.clone();
+                println!("[{}] - [TRITON] Attempting to send buy transaction for sig: {}", 
+                    Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect);
+                
+                if let Some(sig_bytes) = &parsed.sig_bytes {
+                    if let Some(mut tx_with_pubkey) = GLOBAL_TX_MAP.get_mut(sig_bytes) {
+                        // Send transaction asynchronously without blocking the worker thread
+                        let sig_detect_clone = sig_detect.clone();
+                        let tx_clone = tx_with_pubkey.tx.clone();
+                        let detection_time = parsed.detection_time.unwrap();
+                        let slot = parsed.slot.unwrap();
+                        let sig_bytes_clone = sig_bytes.clone();
+                        
+                        // Update the transaction info immediately (non-blocking)
+                        tx_with_pubkey.send_time = Instant::now();
+                        
+                        ASYNC_RUNTIME.spawn(async move {
+                            let send_start = Instant::now();
+                            match send_tx_zeroslot(&tx_clone).await {
+                                Ok(sig) => {
+                                    TRITON_TRANSACTIONS_SENT.fetch_add(1, Ordering::Relaxed);
+                                    let send_time = send_start.elapsed();
+                                    let total_elapsed = send_start.duration_since(detection_time);
+                                    
+                                    println!(
+                                        "[{}] - [TRITON] SUCCESS - Sent buy tx with sig: {} | send time: {:.2?} | total elapsed: {:.2?} | total sent: {}",
+                                        Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                                        sig,
+                                        send_time,
+                                        total_elapsed,
+                                        TRITON_TRANSACTIONS_SENT.load(Ordering::Relaxed)
+                                    );
+                                    
+                                    // Update the transaction info in the map (this is safe since we're not blocking)
+                                    if let Some(mut tx_with_pubkey) = GLOBAL_TX_MAP.get_mut(&sig_bytes_clone) {
+                                        tx_with_pubkey.send_sig = sig.clone();
+                                        tx_with_pubkey.send_slot = slot;
+                                    }
+                                }
+                                Err(e) => {
+                                    TRITON_ERRORS.fetch_add(1, Ordering::Relaxed);
+                                    eprintln!("[crossbeam_worker] Error: send_tx_zeroslot failed: {:?}", e);
+                                }
+                            }
+                        });
+                    } else {
+                        TRITON_ERRORS.fetch_add(1, Ordering::Relaxed);
+                        eprintln!("[crossbeam_worker] Error: GLOBAL_TX_MAP.get_mut failed for sig_detect={}", sig_detect);
+                    }
+                } else {
+                    TRITON_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    eprintln!("[crossbeam_worker] Error: No sig_bytes found for sig_detect={}", sig_detect);
                 }
-            }        }
+            }
+        }
     });
 }
 

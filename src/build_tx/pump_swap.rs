@@ -17,6 +17,7 @@ use solana_client::rpc_config::RpcProgramAccountsConfig;
 use solana_client::rpc_config::RpcAccountInfoConfig;
 use solana_client::rpc_client::RpcClient;
 use borsh::{BorshDeserialize, BorshSerialize};
+use crate::build_tx::utils::get_account;
 
 /// Enum for swap direction
 #[derive(PartialEq, Copy, Clone)]
@@ -55,6 +56,7 @@ pub mod pump_swap_constants {
 }
 
 /// Struct to hold all required accounts for a swap
+#[derive(PartialEq, Copy, Clone, Debug)]
 pub struct PumpAmmAccounts {
     pub pool: Pubkey,
     pub user: Pubkey,
@@ -77,6 +79,36 @@ pub struct PumpAmmAccounts {
     pub coin_creator_vault_authority: Pubkey,
 }
 
+impl Default for PumpAmmAccounts {
+    fn default() -> Self {
+        PumpAmmAccounts {
+            pool: Pubkey::default(),
+            user: Pubkey::default(),
+            global_config: Pubkey::default(),
+            base_mint: Pubkey::default(),
+            quote_mint: Pubkey::default(),
+            user_base_token_account: Pubkey::default(),
+            user_quote_token_account: Pubkey::default(),
+            pool_base_token_account: Pubkey::default(),
+            pool_quote_token_account: Pubkey::default(),
+            protocol_fee_recipient: Pubkey::default(),
+            protocol_fee_token_account: Pubkey::default(),
+            base_token_program: Pubkey::default(),
+            quote_token_program: Pubkey::default(),
+            system_program: Pubkey::default(),
+            associated_token_program: Pubkey::default(),
+            event_authority: Pubkey::default(),
+            pump_program: Pubkey::default(),
+            coin_creator_vault_ata: Pubkey::default(),
+            coin_creator_vault_authority: Pubkey::default(),
+        }
+    }
+}
+
+pub fn default_pump_amm_accounts() -> PumpAmmAccounts {
+    PumpAmmAccounts::default()
+}
+
 /// Helper to get the discriminator for buy/sell
 fn get_discriminator(direction: SwapDirection) -> [u8; 8] {
     match direction {
@@ -87,7 +119,7 @@ fn get_discriminator(direction: SwapDirection) -> [u8; 8] {
 
 /// Build a PumpSwap instruction (buy or sell)
 pub fn build_pump_swap_instruction(
-    accounts: PumpAmmAccounts,
+    accounts: &PumpAmmAccounts,
     direction: SwapDirection,
     amount: u64,
     limit_quote_amount: u64,
@@ -121,7 +153,6 @@ pub fn build_pump_swap_instruction(
         AccountMeta::new(accounts.coin_creator_vault_ata, false),
         AccountMeta::new_readonly(accounts.coin_creator_vault_authority, false),
     ];
-    println!("program_id: {}", pump_swap_constants::PUMP_SWAP_PROGRAM_ID);
     Instruction {
         program_id: pump_swap_constants::PUMP_SWAP_PROGRAM_ID,
         accounts: metas,
@@ -129,38 +160,58 @@ pub fn build_pump_swap_instruction(
     }
 }
 
-/// Convenience wrappers for buy/sell
-pub fn build_pump_buy_instruction(
-    // base_vault: Pubkey,
-    // quote_vault: Pubkey,
+// /// Convenience wrappers for buy/sell
+// pub fn build_pump_buy_instruction(
+//     // base_vault: Pubkey,
+//     // quote_vault: Pubkey,
+//     amount: u64,
+//     slippage_basis_points: u64,
+//     account_keys: Vec<Vec<u8>>,
+//     accounts: Vec<u8>,
+//     target_sol_buy: u64,
+//     target_token_buy: u64,
+// ) -> (Instruction, u64) {
+
+
+//     let slippage_factor = 1.0+slippage_basis_points as f64 /10000.0;
+//     let base_vault = get_account(account_keys.clone(), accounts.clone(), 7);
+//     let quote_vault = get_account(account_keys.clone(), accounts.clone(), 8);
+
+//     // println!("base_vault: {}", base_vault);
+//     // println!("quote_vault: {}", quote_vault);
+//     let limit_quote_amount = get_pump_swap_amount(
+//         SwapDirection::Buy,
+//         base_vault,
+//         quote_vault,
+//         amount,
+//         target_sol_buy,
+//         target_token_buy,
+//     ).expect("Failed to calculate buy limit_quote_amount");
+
+//     let accounts = get_instruction_accounts(account_keys.clone(), accounts.clone());
+
+//     let instruction = build_pump_swap_instruction(accounts, SwapDirection::Buy, (amount as f64*slippage_factor) as u64, limit_quote_amount);
+//     (instruction, limit_quote_amount)
+// }
+
+pub fn build_pump_sell_instruction(
     amount: u64,
     slippage_basis_points: u64,
-    account_keys: Vec<Vec<u8>>,
-    accounts: Vec<u8>,
-    target_sol_buy: u64,
-    target_token_buy: u64,
-) -> (Instruction, u64) {
+    pump_swap_accounts: &PumpAmmAccounts,
+) -> Instruction {
 
-
-    let slippage_factor = 1.0+slippage_basis_points as f64 /10000.0;
-    let base_vault = get_account(account_keys.clone(), accounts.clone(), 7);
-    let quote_vault = get_account(account_keys.clone(), accounts.clone(), 8);
-
-    // println!("base_vault: {}", base_vault);
-    // println!("quote_vault: {}", quote_vault);
+    let slippage_factor = 1.0-slippage_basis_points as f64 /10000.0;
+    
     let limit_quote_amount = get_pump_swap_amount(
-        SwapDirection::Buy,
-        base_vault,
-        quote_vault,
+        SwapDirection::Sell,
+        pump_swap_accounts.pool_base_token_account,
+        pump_swap_accounts.pool_quote_token_account,
         amount,
-        target_sol_buy,
-        target_token_buy,
-    ).expect("Failed to calculate buy limit_quote_amount");
+        0,
+        0,
+    ).expect("Failed to calculate sell limit_quote_amount");
 
-    let accounts = get_instruction_accounts(account_keys.clone(), accounts.clone());
-
-    let instruction = build_pump_swap_instruction(accounts, SwapDirection::Buy, (amount as f64*slippage_factor) as u64, limit_quote_amount);
-    (instruction, limit_quote_amount)
+    return build_pump_swap_instruction(&pump_swap_accounts, SwapDirection::Sell,  (limit_quote_amount as f64*slippage_factor) as u64, amount);
 }
 
 pub fn build_pump_sell_instruction_raw(
@@ -200,7 +251,7 @@ pub fn build_pump_sell_instruction_raw(
 
     let accounts = get_instruction_accounts_rpc(mint, pool_ac.unwrap(), pool_ac_detail.pool_base_token_account, pool_ac_detail.pool_quote_token_account, pool_ac_detail.coin_creator);
 
-    return build_pump_swap_instruction(accounts, SwapDirection::Sell,  (limit_quote_amount as f64*slippage_factor) as u64, amount);
+    return build_pump_swap_instruction(&accounts, SwapDirection::Sell,  (limit_quote_amount as f64*slippage_factor) as u64, amount);
 }
 
 /// Calculates the expected output amount for a buy or sell swap.
@@ -250,26 +301,24 @@ pub fn get_pump_swap_amount(
 } 
 
 pub fn get_instruction_accounts(
-    account_keys: Vec<Vec<u8>>,
-    accounts: Vec<u8>,
+    account_keys: &[Vec<u8>],
+    accounts: &[u8],
 ) -> PumpAmmAccounts {
 
-    let mint = get_account(account_keys.clone(), accounts.clone(), 3);
+    let mint = get_account(account_keys, accounts, 3);
     let base_ata = spl_associated_token_account::get_associated_token_address(&get_wallet_keypair().pubkey(), &mint);
     let quote_ata = spl_associated_token_account::get_associated_token_address(&get_wallet_keypair().pubkey(), &pump_swap_constants::WSOL);
-    // println!("base_ata: {}", base_ata);
-    // println!("quote_ata: {}", quote_ata);
-    
+ 
     PumpAmmAccounts {
-        pool: get_account(account_keys.clone(), accounts.clone(), 0),
+        pool: get_account(account_keys, accounts, 0),
         user: get_wallet_keypair().pubkey(),
         global_config: pump_swap_constants::PUMP_SWAP_GLOBAL_CONFIG,
         base_mint: mint,
         quote_mint: pump_swap_constants::WSOL,
         user_base_token_account: base_ata,
         user_quote_token_account: quote_ata,
-        pool_base_token_account: get_account(account_keys.clone(), accounts.clone(), 7),
-        pool_quote_token_account: get_account(account_keys.clone(), accounts.clone(), 8),
+        pool_base_token_account: get_account(account_keys, accounts, 7),
+        pool_quote_token_account: get_account(account_keys, accounts, 8),
         protocol_fee_recipient: pump_swap_constants::PUMP_SWAP_PROTOCOL_FEE_RECIPIENT,
         protocol_fee_token_account: pump_swap_constants::PUMP_SWAP_PROTOCOL_FEE_TOKEN_ACCOUNT,
         base_token_program: spl_token::ID,
@@ -278,8 +327,8 @@ pub fn get_instruction_accounts(
         associated_token_program: pump_swap_constants::PUMP_SWAP_ASSOCIATED_TOKEN_PROGRAM,
         event_authority: pump_swap_constants::PUMP_SWAP_EVENT_AUTHORITY,
         pump_program: pump_swap_constants::PUMP_SWAP_PROGRAM_ID,
-        coin_creator_vault_ata: get_account(account_keys.clone(), accounts.clone(), 17),
-        coin_creator_vault_authority: get_account(account_keys.clone(), accounts.clone(), 18),
+        coin_creator_vault_ata: get_account(account_keys, accounts, 17),
+        coin_creator_vault_authority: get_account(account_keys, accounts, 18),
     }
     // TODO: Map the correct indices for each field as per the actual instruction layout
 }
@@ -323,14 +372,14 @@ pub fn get_instruction_accounts_rpc(
     // TODO: Map the correct indices for each field as per the actual instruction layout
 }
 
-pub fn get_account(
-    account_keys: Vec<Vec<u8>>,
-    accounts: Vec<u8>,
-    index: u8,
-) -> Pubkey {
-    let idx = *accounts.get(index as usize).unwrap_or(&0) as usize;
-    Pubkey::try_from(account_keys.get(idx as usize).unwrap().as_slice()).unwrap()
-}
+// pub fn get_account(
+//     account_keys: Vec<Vec<u8>>,
+//     accounts: Vec<u8>,
+//     index: u8,
+// ) -> Pubkey {
+//     let idx = *accounts.get(index as usize).unwrap_or(&0) as usize;
+//     Pubkey::try_from(account_keys.get(idx as usize).unwrap().as_slice()).unwrap()
+// }
 
 pub fn get_pool_accounts(
     mint: Pubkey,

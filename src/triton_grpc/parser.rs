@@ -2,7 +2,7 @@ use crate::build_tx::pump_fun::{build_sell_instruction, BondingCurve};
 use crate::build_tx::tx_builder::{build_and_sign_transaction, create_instruction};
 use crate::config_load::GLOBAL_CONFIG;
 use crate::geyser::{subscribe_update::UpdateOneof, SubscribeUpdate};
-use crate::grpc::arpc_parser::GLOBAL_TX_MAP;
+use crate::grpc::arpc_worker::GLOBAL_TX_MAP;
 use crate::init::initialize::GLOBAL_RPC_CLIENT; // or wherever you defined it
 use crate::send_tx::nextblock::send_tx_nextblock;
 use chrono::Utc;
@@ -21,15 +21,16 @@ use crate::send_tx::rpc::send_tx_via_send_rpcs;
 use crate::send_tx::zero_slot::{create_instruction_zeroslot, send_tx_zeroslot};
 use std::time::Instant;
 use crate::utils::logger::{log_event, setup_event_logger, EventType};
+use crate::utils::rt_scheduler::{set_realtime_priority, RealtimePriority};
 use crossbeam::channel::{unbounded, Sender};
 use once_cell::sync::OnceCell;
 use crate::triton_grpc::crossbeam_worker::{ParsedTx, send_parsed_tx};
 use core_affinity;
 
 
-// Pin the parsing thread to core 1 for lowest latency
+// Pin the parsing thread to core 0 for lowest latency
 pub fn process_triton_message(resp: &SubscribeUpdate) {
-    // Core pinning removed; now handled in client.rs
+    
     let config = GLOBAL_CONFIG.get().expect("Config not initialized");
 
     if let Some(update) = &resp.update_oneof {
@@ -41,22 +42,20 @@ pub fn process_triton_message(resp: &SubscribeUpdate) {
                     if let Some(tx) = &tx_info.transaction {
                         let sig_bytes = tx.signatures.get(0).map(|s| s.clone());
                         let wallet_pubkey = get_wallet_keypair().pubkey();
+                        let wallet_pubkey_bytes = wallet_pubkey.to_bytes();
                         let is_signer = if let Some(message) = &tx.message {
                             if let Some(header) = &message.header {
                                 let num_signers = header.num_required_signatures as usize;
                                 message.account_keys
                                     .iter()
                                     .take(num_signers)
-                                    .any(|bytes| {
-                                        let pubkey = unsafe {
-                                            Pubkey::new_from_array(*(bytes.as_ptr() as *const [u8; 32]))
-                                        };
-                                        pubkey == wallet_pubkey
-                                    })
+                                    .any(|bytes| bytes.as_slice() == wallet_pubkey_bytes)
                             } else { false }
                         } else { false };
                         // Handoff to crossbeam worker for heavy processing
-                        log_event(EventType::GrpcDetectionProcessing, "&sig_detect", start_time, None);
+                        if let Some(ref sig_bytes) = sig_bytes {
+                            log_event(EventType::GrpcDetectionProcessing, sig_bytes, start_time, None);
+                        }
                         let parsed = ParsedTx {
                             sig_bytes,
                             is_signer,

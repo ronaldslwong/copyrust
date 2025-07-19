@@ -19,13 +19,7 @@ pub async fn subscribe_and_print_triton(
     endpoint: &str,
     config: Arc<Config>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Pin this async runtime thread to core 1 for lowest latency
-    if let Some(cores) = core_affinity::get_core_ids() {
-        if cores.len() > 1 {
-            core_affinity::set_for_current(cores[0]);
-            println!("[client.rs] Pinned to core 0");
-        }
-    }
+    // No core pinning needed for subscription client (network I/O)
     println!("[Triton] Connecting to endpoint: {}", endpoint);
     let channel_endpoint = Endpoint::from_shared(endpoint.to_string())?
         .http2_keep_alive_interval(Duration::from_secs(10))
@@ -92,6 +86,19 @@ pub async fn subscribe_and_print_triton(
         .await?
         .into_inner();
     println!("[Triton] Subscription stream established.");
+
+    // Pin the main Triton processing thread to core 0 (once, outside the loop)
+    if let Some(cores) = core_affinity::get_core_ids() {
+        if cores.len() > 0 {
+            core_affinity::set_for_current(cores[0]);
+            println!("[Triton] Main processing thread pinned to core 0");
+        }
+    }
+    
+    // Set high real-time priority for the main processing thread (once)
+    if let Err(e) = crate::utils::rt_scheduler::set_realtime_priority(crate::utils::rt_scheduler::RealtimePriority::High) {
+        eprintln!("[Triton] Failed to set real-time priority: {}", e);
+    }
 
     while let Some(message) = stream.message().await? {
         // println!("[Triton] Received raw message.");

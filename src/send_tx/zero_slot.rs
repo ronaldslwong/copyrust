@@ -1,9 +1,8 @@
 use std::str::FromStr;
 
 use bs58;
-use base64;
+use base64::{Engine as _, engine::general_purpose};
 use reqwest::Client;
-use serde_json::json;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     pubkey::Pubkey,
@@ -11,29 +10,23 @@ use solana_sdk::{
     system_instruction,
     transaction::Transaction,
 };
-use structopt::StructOpt;
 use solana_sdk::instruction::Instruction;
 use crate::config_load::GLOBAL_CONFIG;
 use crate::init::wallet_loader::get_wallet_keypair;
+use once_cell::sync::Lazy;
 
-#[derive(Debug, StructOpt)]
-#[structopt(
-    name = "send_solana_transaction",
-    about = "Send a Solana transaction with a tip."
-)]
-struct Opt {
-    #[structopt(long, help = "Solana API key for accessing the network.")]
-    api_key: String,
-
-    #[structopt(long, help = "Sender's private key for signing the transaction.")]
-    private_key: String,
-
-    #[structopt(long, help = "Public key of the tip receiver.")]
-    tip_key: String,
-
-    #[structopt(long, help = "Public key of the main receiver.")]
-    to_public_key: String,
-}
+// Global HTTP client with connection pooling for better performance
+static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
+    Client::builder()
+        .pool_max_idle_per_host(50) // Keep up to 50 idle connections per host for high throughput
+        .pool_idle_timeout(std::time::Duration::from_secs(120)) // Keep connections alive for 2 minutes
+        .tcp_keepalive(Some(std::time::Duration::from_secs(30))) // Enable TCP keep-alive
+        .timeout(std::time::Duration::from_secs(3)) // 3 second timeout for larger transactions
+        .connect_timeout(std::time::Duration::from_millis(500)) // 500ms connect timeout
+        // Remove HTTP/2 prior knowledge to avoid frame size issues with large transactions
+        .build()
+        .expect("Failed to create HTTP client")
+});
 
 async fn send_solana_transaction(
     api_key: &str,
@@ -120,15 +113,24 @@ pub fn create_instruction_zeroslot(
 
 
 pub async fn send_tx_zeroslot(tx: &Transaction) -> Result<String, Box<dyn std::error::Error>> {
-    let client = Client::new();
     let config = GLOBAL_CONFIG.get().expect("Config not initialized");
 
-    // Serialize the transaction to a base64-encoded string
-    let serialized_transaction = bincode::serialize(&tx).unwrap();
-    let base64_encoded_transaction = base64::encode(serialized_transaction);
+    // Pre-allocate buffer for serialization to avoid allocations
+    let mut buffer = Vec::with_capacity(4096); // Pre-allocate 4KB buffer for larger transactions
+    bincode::serialize_into(&mut buffer, tx)?;
+    
+    // Use a more efficient base64 encoding approach
+    let base64_encoded_transaction = general_purpose::STANDARD.encode(&buffer);
 
-    // Build the JSON-RPC request
-    let request_body = json!({
+    // Log transaction size for debugging
+    let tx_size = base64_encoded_transaction.len();
+    if tx_size > 10000 {
+        eprintln!("[WARNING] Large transaction detected: {} bytes", tx_size);
+    }
+
+    // Build the JSON-RPC request (avoid cloning the URL)
+    // Use a more efficient approach by pre-allocating the JSON structure
+    let request_body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "sendTransaction",
@@ -141,17 +143,29 @@ pub async fn send_tx_zeroslot(tx: &Transaction) -> Result<String, Box<dyn std::e
         ]
     });
 
-    // Send the request{
-    let url = config.zero_slot_url.clone(); // This clones the String
-    let response = client.post(url)
+    // Send the request using the global client with connection pooling
+    let response = HTTP_CLIENT
+        .post(&config.zero_slot_url) // Use reference to avoid cloning
+        .header("Content-Type", "application/json")
         .json(&request_body)
         .send()
         .await?;
 
-    // Parse the response
+    // Check response status
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        eprintln!("HTTP error {}: {}", status, error_text);
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other, 
+            format!("HTTP error {}: {}", status, error_text)
+        )));
+    }
+
+    // Parse the response more efficiently
     let response_json: serde_json::Value = response.json().await?;
+    
     if let Some(result) = response_json.get("result") {
-        println!("Transaction sent successfully: {}", result);
         return Ok(result.to_string());
     } else if let Some(error) = response_json.get("error") {
         eprintln!("Failed to send transaction: {}", error);

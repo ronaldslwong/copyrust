@@ -8,9 +8,14 @@ use once_cell::sync::OnceCell;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::signature::Signer;
-use crate::send_tx::rpc::{initialize_send_rpc_clients, keep_send_rpc_connections_warm};
+use crate::send_tx::rpc::{initialize_send_rpc_clients};
 use crate::utils::logger::setup_event_logger;
 use crate::triton_grpc::crossbeam_worker::setup_crossbeam_worker;
+use crate::grpc::arpc_parser::setup_arpc_crossbeam_worker;
+use crate::send_tx::rpc::keep_blockhash_fresh;
+use solana_sdk::hash::Hash;
+use tokio::sync::RwLock;
+use crate::send_tx::rpc::GLOBAL_LATEST_BLOCKHASH;
 // use crate::send_tx::jito::init_jito_grpc_sender;
 pub static GLOBAL_RPC_CLIENT: OnceCell<RpcClient> = OnceCell::new();
 
@@ -38,8 +43,10 @@ pub async fn initialize() -> (Config, Vec<DexPairData>) {
     initialize_send_rpc_clients(&config);
     println!("Send RPC clients initialized");
     // Spawn the keep-alive task in the background
+    let _ = GLOBAL_LATEST_BLOCKHASH.set(RwLock::new(Hash::default()));
+
     tokio::spawn(async {
-        keep_send_rpc_connections_warm().await;
+        keep_blockhash_fresh().await;
     });
     println!("Send RPC connections warmed up");
 
@@ -47,7 +54,10 @@ pub async fn initialize() -> (Config, Vec<DexPairData>) {
     println!("Event logger initialized");
 
     setup_crossbeam_worker();
-    println!("Crossbeam worker initialized");
+    println!("GRPC Crossbeam worker initialized");
+
+    setup_arpc_crossbeam_worker();
+    println!("ARPC crossbeam worker initialized");
 
     // init_jito_grpc_sender(&config.jito_url).await;
     // println!("Jito gRPC sender initialized");
