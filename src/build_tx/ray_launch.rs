@@ -6,7 +6,7 @@ use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use crate::init::initialize::GLOBAL_RPC_CLIENT;
 use std::error::Error;
-use crate::build_tx::pump_swap::SwapDirection;
+use crate::build_tx::utils::SwapDirection;
 use crate::init::wallet_loader::get_wallet_keypair;
 use crate::build_tx::utils::get_account;
 use solana_sdk::signature::Signer;
@@ -14,6 +14,87 @@ use solana_program::instruction::{AccountMeta, Instruction};
 use num_bigint::BigUint;
 use crate::constants::consts;
 use crate::constants::raydium_launchpad;
+use borsh::{BorshDeserialize, BorshSerialize};
+
+#[derive(Debug, Clone, BorshDeserialize, BorshSerialize)]
+pub struct RaydiumPoolState {
+    pub epoch: u64,
+    pub auth_bump: u8,
+    pub status: u8,
+    pub base_decimals: u8,
+    pub quote_decimals: u8,
+    pub migrate_type: u8,
+    pub supply: u64,
+    // pub padding: [u8; 7],
+    pub total_base_sell: u64,
+    pub virtual_base: u64,
+    pub virtual_quote: u64,
+    pub real_base: u64,
+    pub real_quote: u64,
+    pub total_quote_fund_raising: u64,
+    pub quote_protocol_fee: u64,
+    pub platform_fee: u64,
+    pub migrate_fee: u64,
+}
+
+impl Default for RaydiumPoolState {
+    fn default() -> Self {
+        Self {
+            epoch: 0,
+            auth_bump: 0,
+            status: 0,
+            base_decimals: 0,
+            quote_decimals: 0,
+            migrate_type: 0,
+            supply: 0,
+            // padding: [0; 7],
+            total_base_sell: 0,
+            virtual_base: 0,
+            virtual_quote: 0,
+            real_base: 0,
+            real_quote: 0,
+            total_quote_fund_raising: 0,
+            quote_protocol_fee: 0,
+            platform_fee: 0,
+            migrate_fee: 0,
+        }
+    }
+}
+
+impl RaydiumPoolState {
+    /// Deserialize from account data (skipping the 8-byte discriminator)
+    pub fn from_account_data(data: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        if data.len() < 8 {
+            return Err("Account data too short".into());
+        }
+        
+        // Skip the 8-byte discriminator and deserialize the rest
+        let pool_state = RaydiumPoolState::try_from_slice(&data[8..])?;
+        Ok(pool_state)
+    }
+    
+    /// Get pool reserves in the format expected by existing code
+    pub fn get_reserves(&self) -> RaydiumPoolRealReserves {
+        RaydiumPoolRealReserves {
+            total_sell_a: self.total_base_sell.into(),
+            total_fund_raising_b: self.total_quote_fund_raising.into(),
+            real_a: self.real_base,
+            real_b: self.real_quote,
+            virtual_a: self.virtual_base,
+            virtual_b: self.virtual_quote,
+        }
+    }
+    
+    /// Check if pool is complete (status > 0)
+    pub fn is_complete(&self) -> bool {
+        self.status > 0
+    }
+    
+    /// Check if pool has migrated (migrate_type == 1)
+    pub fn has_migrated(&self) -> bool {
+        self.migrate_type == 1
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct RaydiumPoolRealReserves {
@@ -143,31 +224,15 @@ fn get_discriminator(direction: SwapDirection) -> [u8; 8] {
 
 pub fn get_ray_launch_swap_amount(
     direction: SwapDirection,
-    pool_ac: Pubkey,
+    pool_state: &RaydiumPoolState,
     swap_amount: u64,
     target_sol_buy: u64,
     target_token_buy: u64,
 ) -> Result<u64, Box<dyn Error>> {
-    let rpc_client = GLOBAL_RPC_CLIENT.get().expect("RPC client not initialized");
 
-    let res: solana_client::rpc_response::Response<Vec<Option<solana_sdk::account::Account>>> = rpc_client.get_multiple_accounts_with_commitment(&[pool_ac], CommitmentConfig::processed())?;
-    if res.value.is_empty() || res.value[0].is_none() {
-        return Err("missing pool account data".into());
-    }
-    let account_opt = res.value.get(0).and_then(|opt| opt.as_ref());
-    let data = account_opt.map(|acct| acct.data.as_slice()).ok_or("missing pool account data")?;
-    
-    let pool_data = RaydiumPoolRealReserves::from_account_data(data, 53, 61, 0, 0, 37, 45)
-        .expect("Failed to parse pool reserves");
-    
-    if pool_data.real_a == 0 {
-        return Err("zero base amount".into());
-    }
-    // println!("pool_data.real_base: {}", pool_data.real_a);
-    // println!("pool_data.real_quote: {}", pool_data.real_b);
     let adjusted_price = match direction {
-        SwapDirection::Buy => ((pool_data.virtual_a - pool_data.real_a-target_token_buy) as f64 * swap_amount as f64) / ((pool_data.virtual_b + pool_data.real_b + target_sol_buy) as f64 + swap_amount as f64) ,
-        SwapDirection::Sell => ((pool_data.virtual_b + pool_data.real_b-target_sol_buy) as f64 * swap_amount as f64) / ((pool_data.virtual_a - pool_data.real_a + target_token_buy) as f64 + swap_amount as f64) ,
+        SwapDirection::Buy => ((pool_state.virtual_base - pool_state.real_base-target_token_buy) as f64 * swap_amount as f64) / ((pool_state.virtual_quote + pool_state.real_quote + target_sol_buy) as f64 + swap_amount as f64) ,
+        SwapDirection::Sell => ((pool_state.virtual_quote + pool_state.real_quote-target_sol_buy) as f64 * swap_amount as f64) / ((pool_state.virtual_base - pool_state.real_base + target_token_buy) as f64 + swap_amount as f64) ,
     };
     Ok(adjusted_price as u64)
 }
@@ -175,7 +240,7 @@ pub fn get_ray_launch_swap_amount(
 // pub fn build_ray_launch_buy_instruction(
 //     // base_vault: Pubkey,
 //     // quote_vault: Pubkey,
-//     amount: u64,
+//     sol_amount: u64,
 //     slippage_basis_points: u64,
 //     accounts: RayLaunchAccounts,
 //     target_sol_buy: u64,
@@ -233,12 +298,11 @@ pub fn build_ray_launch_sell_instruction(
 
     let slippage_factor = 1.0-slippage_basis_points as f64 /10000.0;
 
-    // println!("base_vault: {}", base_vault);
-    // println!("quote_vault: {}", quote_vault);
-    // println!("pool_state: {}", accounts.pool_state.to_string());
+    let pool_state = get_pool_state(&accounts);
+
     let limit_quote_amount = get_ray_launch_swap_amount(
         SwapDirection::Sell,
-        accounts.pool_state,
+        &pool_state,
         amount,
         0,
         0,
@@ -315,3 +379,13 @@ pub fn get_instruction_accounts(
         program: raydium_launchpad::RAY_LAUNCH_PROGRAM_ID,
     }
 }
+pub fn get_pool_state(ray_launch_accounts: &RayLaunchAccounts) -> RaydiumPoolState {
+    let client = GLOBAL_RPC_CLIENT.get().expect("RPC client not initialized");
+    let account_data = client.get_account_data(&ray_launch_accounts.pool_state).expect("Failed to get account data");
+    println!("pool_state: {:?}", ray_launch_accounts.pool_state);
+    let pool_state = RaydiumPoolState::deserialize(&mut &account_data[8..]).expect("Failed to deserialize bonding curve state");
+    
+    pool_state
+}
+
+

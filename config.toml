@@ -43,10 +43,10 @@ cuPrice = 1_000_000
 accountsMonitor = [
   #"BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW", #photon
   #"suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK",
-  #"LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
+  "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
   #"CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
   #"CpKdPv3L8HGcgzbBNY9tDH3CNB7DavXma86VfEfSVfEg",
-  "AxiomfHaWDemCFBLBayqnEnNwE6b7B2Qz3UmzMpgbMG6",
+  #"AxiomfHaWDemCFBLBayqnEnNwE6b7B2Qz3UmzMpgbMG6",
 ]
 
 mintsMonitor = [

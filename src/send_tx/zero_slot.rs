@@ -3,6 +3,7 @@ use std::str::FromStr;
 use bs58;
 use base64::{Engine as _, engine::general_purpose};
 use reqwest::Client;
+use rand::seq::SliceRandom;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     pubkey::Pubkey,
@@ -14,6 +15,20 @@ use solana_sdk::instruction::Instruction;
 use crate::config_load::GLOBAL_CONFIG;
 use crate::init::wallet_loader::get_wallet_keypair;
 use once_cell::sync::Lazy;
+
+// List of ZeroSlot tip accounts
+static ZEROSLOT_TIP_ACCOUNTS: &[&str] = &[
+    "4HiwLEP2Bzqj3hM2ENxJuzhcPCdsafwiet3oGkMkuQY4",
+    "7toBU3inhmrARGngC7z6SjyP85HgGMmCTEwGNRAcYnEK",
+    "8mR3wB1nh4D6J9RUCugxUpc6ya8w38LPxZ3ZjcBhgzws",
+    "6SiVU5WEwqfFapRuYCndomztEwDjvS5xgtEof3PLEGm9",
+    "TpdxgNJBWZRL8UXF5mrEsyWxDWx9HQexA9P1eTWQ42p",
+    "D8f3WkQu6dCF33cZxuAsrKHrGsqGP2yvAHf8mX6RXnwf",
+    "GQPFicsy3P3NXxB5piJohoxACqTvWE9fKpLgdsMduoHE",
+    "Ey2JEr8hDkgN8qKJGrLf2yFjRhW7rab99HVxwi5rcvJE",
+    "4iUgjMT8q2hNZnLuhpqZ1QtiV8deFPy2ajvvjEpKKgsS",
+    "3Rz8uD83QsU8wKvZbgWAPvCNDU6Fy8TSZTMcPm3RB6zt",
+];
 
 // Global HTTP client with connection pooling for better performance
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
@@ -88,8 +103,13 @@ async fn send_solana_transaction(
 }
 
 
-pub fn zeroslot_tip(tip_ac: &str, tip: u64, from_pubkey: &Pubkey) -> Instruction {
-    let tip_pubkey = Pubkey::from_str(tip_ac).expect("Invalid pubkey");
+pub fn zeroslot_tip(tip: u64, from_pubkey: &Pubkey) -> Instruction {
+    // Randomly select a tip account from the list
+    let tip_account = ZEROSLOT_TIP_ACCOUNTS
+        .choose(&mut rand::thread_rng())
+        .expect("Failed to select random tip account");
+    
+    let tip_pubkey = Pubkey::from_str(tip_account).expect("Invalid pubkey");
     system_instruction::transfer(from_pubkey, &tip_pubkey, tip)
 }
 
@@ -101,7 +121,6 @@ pub fn create_instruction_zeroslot(
     let keypair: &'static Keypair = get_wallet_keypair();
 
     let tip_ix = zeroslot_tip(
-        "8mR3wB1nh4D6J9RUCugxUpc6ya8w38LPxZ3ZjcBhgzws",
         tip,
         &keypair.pubkey(),
     );
@@ -160,6 +179,8 @@ pub async fn send_tx_zeroslot(tx: &Transaction) -> Result<String, Box<dyn std::e
             std::io::ErrorKind::Other, 
             format!("HTTP error {}: {}", status, error_text)
         )));
+    } else {
+        println!("Transaction sent successfully");
     }
 
     // Parse the response more efficiently

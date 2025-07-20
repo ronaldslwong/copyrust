@@ -19,7 +19,7 @@ use crate::init::wallet_loader::get_wallet_keypair;
 use crate::build_tx::pump_swap::build_pump_sell_instruction;
 
 use crate::build_tx::ray_launch::build_ray_launch_sell_instruction;
-use crate::build_tx::ray_cpmm::{build_ray_cpmm_sell_instruction, build_ray_cpmm_sell_instruction_no_quote};
+use crate::build_tx::ray_cpmm::{build_ray_cpmm_sell_instruction};
 use crate::send_tx::rpc::send_tx_via_send_rpcs;
 use crate::send_tx::zero_slot::{create_instruction_zeroslot, send_tx_zeroslot};
 use crate::build_tx::tx_builder::{build_and_sign_transaction, create_instruction};
@@ -167,6 +167,8 @@ pub fn setup_crossbeam_worker() {
                         if bonding_curve_state.complete {
                             tx_type = "pump_swap".to_string();
                             println!("[{}] - [grpc] Pumpfun token has migrated to pumpswap - applying pumpswap sell logic", now.format("%Y-%m-%d %H:%M:%S%.3f"));
+
+                            //need to figure out how to build pump swap struct!!!!!!!!!!!!!
                         }
                     }
 
@@ -217,18 +219,16 @@ pub fn setup_crossbeam_worker() {
                         send_tx = true;
                     }
                     if tx_type == "ray_cpmm" {
-                        sell_instruction = build_ray_cpmm_sell_instruction_no_quote(
-                            tx_with_pubkey.ray_cpmm_pool_state,
-                            tx_with_pubkey.ray_cpmm_accounts,
+                        sell_instruction = build_ray_cpmm_sell_instruction(
                             tx_with_pubkey.token_amount,
+                            &tx_with_pubkey.raydium_cpmm_accounts,
                         );
                         send_tx = true;
                     }
                     if tx_type == "ray_launch_cpmm" {
                         sell_instruction = build_ray_cpmm_sell_instruction(
                             tx_with_pubkey.token_amount,
-                            config.sell_slippage_bps,
-                            tx_with_pubkey.mint,
+                            &tx_with_pubkey.raydium_cpmm_accounts,
                         );
                         send_tx = true;
                     }
@@ -302,7 +302,6 @@ pub fn setup_crossbeam_worker() {
                 if let Some(sig_bytes) = &parsed.sig_bytes {
                     if let Some(mut tx_with_pubkey) = GLOBAL_TX_MAP.get_mut(sig_bytes) {
                         // Send transaction asynchronously without blocking the worker thread
-                        let sig_detect_clone = sig_detect.clone();
                         let tx_clone = tx_with_pubkey.tx.clone();
                         let detection_time = parsed.detection_time.unwrap();
                         let slot = parsed.slot.unwrap();

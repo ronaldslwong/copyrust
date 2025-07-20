@@ -4,9 +4,10 @@ use crate::config_load::Config;
 use solana_sdk::pubkey::Pubkey;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::utils::logger::{log_event, EventType};
-use crate::utils::rt_scheduler::{set_realtime_priority, RealtimePriority};
 use std::sync::Arc;
-use core_affinity;
+use crate::constants::raydium_launchpad::RAYDIUM_LAUNCHPAD_PROGRAM_ID_BYTES;
+use crate::constants::axiom::{AXIOM_PUMP_SWAP_PROGRAM_ID_BYTES, AXIOM_PUMP_FUN_PROGRAM_ID_BYTES};
+use crate::constants::raydium_cpmm::RAYDIUM_CPMM_PROGRAM_ID_BYTES;
 
 // use chrono::Local;
 
@@ -46,6 +47,8 @@ pub async fn process_arpc_msg(resp: &SubscribeResponse, _config: &Config) -> Opt
 
     let sig_bytes = tx.signatures.get(0).map(|s| Arc::new(s.clone()));
     
+    // Extract signature string for later use
+    let sig_string = sig_bytes.as_ref().map(|s| bs58::encode(s.as_slice()).into_string()).unwrap_or_default();
     
     if let Some(ref sig_bytes) = sig_bytes {
         log_event(EventType::ArpcDetectionProcessing, sig_bytes, detection_time, None);
@@ -60,8 +63,31 @@ pub async fn process_arpc_msg(resp: &SubscribeResponse, _config: &Config) -> Opt
     };
     send_parsed_arpc_trade(parsed);
 
-    // Optionally return None, or just return early
-    None
+    // Check if this message contains any of the target program IDs
+    let mut has_target_program = false;
+    for account_key in &tx.account_keys {
+        if account_key == &*crate::constants::raydium_launchpad::RAYDIUM_LAUNCHPAD_PROGRAM_ID_BYTES ||
+           account_key == &*crate::constants::axiom::AXIOM_PUMP_SWAP_PROGRAM_ID_BYTES ||
+           account_key == &*crate::constants::axiom::AXIOM_PUMP_FUN_PROGRAM_ID_BYTES ||
+           account_key == &*crate::constants::raydium_cpmm::RAYDIUM_CPMM_PROGRAM_ID_BYTES {
+            has_target_program = true;
+            break;
+        }
+    }
+
+    // Return a dummy ParsedTrade if we have target programs (this will increment the processed counter)
+    if has_target_program {
+        Some(ParsedTrade {
+            sig: sig_string,
+            program_id: "target_program".to_string(),
+            mint: "unknown".to_string(),
+            sol_size: 0.0,
+            direction: "unknown".to_string(),
+            slot,
+        })
+    } else {
+        None
+    }
 }
 
 /// Parses a slice of bytes using a sliding window, printing any valid 32-byte chunk

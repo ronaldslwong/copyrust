@@ -10,6 +10,7 @@ use crate::build_tx::ray_launch::RayLaunchAccounts;
 use crate::build_tx::ray_cpmm::RaydiumCpmmPoolState;
 use crate::build_tx::pump_swap::PumpAmmAccounts;
 use crate::build_tx::pump_fun::PumpFunAccounts;
+use crate::build_tx::ray_cpmm::RayCpmmSwapAccounts;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use std::sync::Arc;
@@ -22,9 +23,11 @@ use chrono::Utc;
 use crate::send_tx::zero_slot::create_instruction_zeroslot;
 use crate::constants::axiom::{AXIOM_PUMP_SWAP_PROGRAM_ID_BYTES, AXIOM_PUMP_FUN_PROGRAM_ID_BYTES};
 use crate::constants::raydium_launchpad::RAYDIUM_LAUNCHPAD_PROGRAM_ID_BYTES;
+use crate::constants::raydium_cpmm::RAYDIUM_CPMM_PROGRAM_ID_BYTES;
 use crate::grpc::programs::raydium_launchpad::raydium_launchpad_build_buy_tx;
 use crate::grpc::programs::axiom::axiom_pump_swap_build_buy_tx;
 use crate::grpc::programs::axiom::axiom_pump_fun_build_buy_tx;
+use crate::grpc::programs::raydium_cpmm::raydium_cpmm_build_buy_tx;
 
 // Add global counters for monitoring worker performance
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -64,6 +67,7 @@ pub struct TxWithPubkey {
     pub ray_cpmm_accounts: RaydiumCpmmPoolState,
     pub pump_swap_accounts: PumpAmmAccounts,
     pub pump_fun_accounts: PumpFunAccounts,
+    pub raydium_cpmm_accounts: RayCpmmSwapAccounts,
     pub ray_cpmm_pool_state: Pubkey,
     pub send_sig: String,
     pub send_time: Instant,
@@ -84,6 +88,7 @@ impl TxWithPubkey {
             pump_swap_accounts: PumpAmmAccounts::default(),
             pump_fun_accounts: PumpFunAccounts::default(),
             ray_cpmm_pool_state: Pubkey::default(),
+            raydium_cpmm_accounts: RayCpmmSwapAccounts::default(),
             send_sig: String::new(),
             send_time: Instant::now(),
             send_slot: 0,
@@ -189,6 +194,7 @@ pub fn setup_arpc_crossbeam_worker() {
             let mut pump_fun_accounts = PumpFunAccounts::default();
             let mut tx_with_pubkey: Option<TxWithPubkey> = None;
             let mut target_token_buy = 0;
+            let mut raydium_cpmm_accounts = RayCpmmSwapAccounts::default();
 
             let parse_start = Instant::now();
             // --- INSTRUCTION MATCHING ---
@@ -250,6 +256,24 @@ pub fn setup_arpc_crossbeam_worker() {
                         tx.pump_fun_accounts = pump_fun_accounts.clone();
                         tx_with_pubkey = Some(tx);
                         break;
+                    }
+                    if account_inst_bytes == &*RAYDIUM_CPMM_PROGRAM_ID_BYTES {
+                        (buy_instruction, mint, target_token_buy, raydium_cpmm_accounts) = raydium_cpmm_build_buy_tx(
+                            &parsed.account_keys,
+                            &instr.accounts,
+                            parsed.sig_bytes.clone(),
+                            parsed.detection_time,
+                            buy_sol_lamports,
+                            config.buy_slippage_bps,
+                        );
+                        if mint != Pubkey::default() { //buy tx
+                            send_tx = true;
+                            let mut tx = TxWithPubkey::default();
+                            tx.tx_type = "ray_cpmm".to_string();
+                            tx.raydium_cpmm_accounts = raydium_cpmm_accounts.clone();
+                            tx_with_pubkey = Some(tx);
+                            break;
+                        }
                     }
                 }
             }

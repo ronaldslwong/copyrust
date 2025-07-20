@@ -279,7 +279,7 @@ pub fn get_instruction_accounts(
 pub fn get_bonding_curve_state(pump_fun_accounts: &PumpFunAccounts) -> BondingCurve {
     let client = GLOBAL_RPC_CLIENT.get().expect("RPC client not initialized");
     let account_data = client.get_account_data(&pump_fun_accounts.bonding_curve_pda).expect("Failed to get account data");
-    println!("pump_fun_accounts.bonding_curve_pda: {:?}", pump_fun_accounts.bonding_curve_pda);
+    
     let bonding_curve_state = BondingCurve::deserialize(&mut &account_data[8..]).expect("Failed to deserialize bonding curve state");
     
     bonding_curve_state

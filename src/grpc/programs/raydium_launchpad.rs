@@ -7,6 +7,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use solana_program::instruction::Instruction;
 use crate::build_tx::ray_launch::RayLaunchAccounts;
+use crate::build_tx::utils::SwapDirection;
+use crate::build_tx::ray_launch::get_ray_launch_swap_amount;
+use crate::build_tx::ray_launch::get_pool_state;
 
 pub fn raydium_launchpad_build_buy_tx(
     account_keys: &[Vec<u8>],
@@ -28,10 +31,19 @@ pub fn raydium_launchpad_build_buy_tx(
         );
     };
 
-    // println!("mint: {:?}, u1: {:?}, u2: {:?}", mint, u1, u2);
+    println!("mint: {:?}, u1: {:?}, u2: {:?}", mint, u1, u2);
     let ray_launch_accounts = get_instruction_accounts(&account_keys, &accounts);
+    let pool_state = get_pool_state(&ray_launch_accounts);
 
-    let target_token_buy = (amount as f64 / u2 as f64 * u1 as f64) as u64;
+    let target_token_buy = get_ray_launch_swap_amount(
+        SwapDirection::Buy,
+        &pool_state,
+        amount,
+        u2,
+        u1,
+    ).expect("Failed to calculate buy limit_quote_amount");
+
+    // let target_token_buy = (amount as f64 / u2 as f64 * u1 as f64) as u64;
 
     // println!("target_token_buy: {:?}", target_token_buy);
 
