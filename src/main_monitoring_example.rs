@@ -1,38 +1,85 @@
-pub mod build_tx;
-pub mod config_load;
-pub mod grpc;
-pub mod init;
-pub mod proto;
-pub mod send_tx;
-#[path = "solana_storage_confirmed_block.rs"]
-pub mod solana;
-pub mod triton_grpc;
-pub mod utils;
-pub mod constants;
-pub mod monitoring_example;
-use crate::constants::monitoring::MONITORING_PROGRAMS;
-use crate::constants::monitoring::get_monitoring_arpc_endpoint;
+// Example of how to integrate monitoring into your existing main.rs
+// This shows the minimal changes needed to add monitoring alongside your trading pipes
+
 use crate::grpc::monitoring_client::start_arpc_monitoring_with_retry;
-
-pub mod arpc {
-    include!(concat!(env!("OUT_DIR"), "/arpc.rs"));
-}
-
-pub mod geyser {
-    include!(concat!(env!("OUT_DIR"), "/geyser.rs"));
-}
-
-use crate::grpc::client::subscribe_with_retry;
+use crate::constants::monitoring::{MONITORING_PROGRAMS, get_monitoring_arpc_endpoint};
 use crate::init::initialize::initialize;
-use crate::triton_grpc::client::subscribe_with_retry_triton;
 use crate::utils::rt_scheduler::init_realtime_scheduling;
-// use futures::future::join_all;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
-use tokio::time::{interval, Duration};
-use chrono::Utc;
 
+/// Example of minimal changes to your existing main.rs
+#[tokio::main]
+async fn main() {
+    // Initialize real-time scheduling early
+    if let Err(e) = init_realtime_scheduling() {
+        eprintln!("[Main] Real-time scheduling initialization failed: {}", e);
+        eprintln!("[Main] Continuing without real-time scheduling...");
+    }
+    
+    let (config, _) = initialize().await;
+    let config_arc = Arc::new(config);
+
+    let mut handles: Vec<JoinHandle<()>> = Vec::new();
+
+    // Start stats monitoring (your existing code)
+    let stats_handle = tokio::spawn(start_stats_monitoring());
+    handles.push(stats_handle);
+
+    // Start Triton gRPC client (your existing trading pipe)
+    let triton_config = Arc::clone(&config_arc);
+    let handle = tokio::spawn(async move {
+        let endpoint = triton_config.grpc_endpoint.clone();
+        println!("[Main] Starting Triton gRPC client...");
+        if let Err(e) = crate::triton_grpc::client::subscribe_with_retry_triton(&endpoint, triton_config).await {
+            eprintln!("[Main] Triton gRPC client error: {}", e);
+        }
+    });
+    handles.push(handle);
+
+    // Start ARPC client (your existing trading pipe)
+    let arpc_config = Arc::clone(&config_arc);
+    let handle = tokio::spawn(async move {
+        let endpoint = arpc_config.arpc_endpoint.clone();
+        let accounts_to_monitor = arpc_config.accounts_monitor.clone();
+        println!("[Main] Starting ARPC client...");
+        if let Err(e) = crate::grpc::client::subscribe_with_retry(&endpoint, accounts_to_monitor, arpc_config).await {
+            eprintln!("[Main] ARPC client error: {}", e);
+        }
+    });
+    handles.push(handle);
+
+    // NEW: Start monitoring system (separate from trading pipes)
+    let monitoring_config = Arc::clone(&config_arc);
+    let monitoring_handle = tokio::spawn(async move {
+        let programs_to_monitor: Vec<String> = MONITORING_PROGRAMS
+            .iter()
+            .map(|&s| s.to_string())
+            .collect();
+        
+        println!("[Main] Starting DEX monitoring system...");
+        if let Err(e) = start_arpc_monitoring_with_retry(
+            &get_monitoring_arpc_endpoint(), 
+            programs_to_monitor, 
+            monitoring_config
+        ).await {
+            eprintln!("[Main] Monitoring system error: {}", e);
+        }
+    });
+    handles.push(monitoring_handle);
+
+    println!("[Main] Waiting for all clients to complete...");
+    for handle in handles {
+        handle.await.unwrap();
+    }
+    println!("[Main] All clients have completed.");
+}
+
+// Your existing stats monitoring function (unchanged)
 async fn start_stats_monitoring() {
+    use tokio::time::{interval, Duration};
+    use chrono::Utc;
+    
     let mut interval = interval(Duration::from_secs(60)); // Report every minute
     
     loop {
@@ -48,10 +95,9 @@ async fn start_stats_monitoring() {
         // Get triton stats
         let (triton_received, triton_sent, triton_found, triton_errors) = crate::triton_grpc::crossbeam_worker::get_triton_stats();
         
-        // Get monitoring stats
+        // NEW: Get monitoring stats
         let (monitoring_received, monitoring_logged, monitoring_errors) = crate::grpc::monitoring_client::get_monitoring_stats();
-        // REMOVED: DEX logs count (performance optimization)
-        let monitoring_logs_count = 0;
+        let monitoring_logs_count = crate::grpc::monitoring_client::get_dex_logs_count();
         
         // Get map stats
         let (map_size, map_entries) = crate::grpc::arpc_worker::get_map_stats();
@@ -74,7 +120,7 @@ async fn start_stats_monitoring() {
             triton_received, triton_sent, triton_found, triton_errors
         );
         
-        // Add monitoring stats
+        // NEW: Monitoring stats
         println!("[{}] MONITORING: Received={}, Logged={}, Errors={}, Active Logs={}, Rate={:.2}%", 
             now.format("%Y-%m-%d %H:%M:%S%.3f"),
             monitoring_received, monitoring_logged, monitoring_errors, monitoring_logs_count,
@@ -128,69 +174,4 @@ async fn start_stats_monitoring() {
         
         println!("[{}] ================================================", now.format("%Y-%m-%d %H:%M:%S%.3f"));
     }
-}
-
-#[tokio::main]
-async fn main() {
-    // Initialize real-time scheduling early
-    if let Err(e) = init_realtime_scheduling() {
-        eprintln!("[Main] Real-time scheduling initialization failed: {}", e);
-        eprintln!("[Main] Continuing without real-time scheduling...");
-    }
-    
-    let (config, _) = initialize().await;
-    let config_arc = Arc::new(config);
-
-    let mut handles: Vec<JoinHandle<()>> = Vec::new();
-
-    // Start stats monitoring
-    let stats_handle = tokio::spawn(start_stats_monitoring());
-    handles.push(stats_handle);
-
-    let triton_config = Arc::clone(&config_arc);
-    let handle = tokio::spawn(async move {
-        let endpoint = triton_config.grpc_endpoint.clone();
-        println!("[Main] Starting Triton gRPC client...");
-        if let Err(e) = subscribe_with_retry_triton(&endpoint, triton_config).await {
-            eprintln!("[Main] Triton gRPC client error: {}", e);
-        }
-    });
-    handles.push(handle);
-
-    let arpc_config = Arc::clone(&config_arc);
-    let handle = tokio::spawn(async move {
-        let endpoint = arpc_config.arpc_endpoint.clone();
-        let accounts_to_monitor = arpc_config.accounts_monitor.clone();
-        println!("[Main] Starting ARPC client...");
-        if let Err(e) = subscribe_with_retry(&endpoint, accounts_to_monitor, arpc_config).await {
-            eprintln!("[Main] ARPC client error: {}", e);
-        }
-    });
-    handles.push(handle);
-
-
-    // NEW: Start monitoring system (separate from trading pipes)
-    let monitoring_config = Arc::clone(&config_arc);
-    let monitoring_handle = tokio::spawn(async move {
-        let programs_to_monitor: Vec<String> = MONITORING_PROGRAMS
-            .iter()
-            .map(|&s| s.to_string())
-            .collect();
-        
-        println!("[Main] Starting DEX monitoring system...");
-        if let Err(e) = start_arpc_monitoring_with_retry(
-            &get_monitoring_arpc_endpoint(), 
-            programs_to_monitor, 
-            monitoring_config
-        ).await {
-            eprintln!("[Main] Monitoring system error: {}", e);
-        }
-    });
-    handles.push(monitoring_handle);
-
-    println!("[Main] Waiting for all clients to complete...");
-    for handle in handles {
-        handle.await.unwrap();
-    }
-    println!("[Main] All clients have completed.");
-}
+} 

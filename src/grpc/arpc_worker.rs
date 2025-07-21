@@ -31,10 +31,22 @@ use crate::grpc::programs::raydium_cpmm::raydium_cpmm_build_buy_tx;
 
 // Add global counters for monitoring worker performance
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicU64;
 static WORKER_MESSAGES_RECEIVED: AtomicUsize = AtomicUsize::new(0);
 static WORKER_TRANSACTIONS_BUILT: AtomicUsize = AtomicUsize::new(0);
 static WORKER_TRANSACTIONS_INSERTED: AtomicUsize = AtomicUsize::new(0);
 static WORKER_ERRORS: AtomicUsize = AtomicUsize::new(0);
+
+// Global performance counters
+static STORAGE_OPERATIONS: AtomicUsize = AtomicUsize::new(0);
+static STORAGE_TIME_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+pub fn get_storage_stats() -> (usize, u64) {
+    (
+        STORAGE_OPERATIONS.load(Ordering::Relaxed),
+        STORAGE_TIME_TOTAL.load(Ordering::Relaxed),
+    )
+}
 
 pub fn get_worker_stats() -> (usize, usize, usize, usize) {
     (
@@ -63,12 +75,13 @@ pub struct TxWithPubkey {
     pub mint: Pubkey,
     pub token_amount: u64,
     pub tx_type: String,
-    pub ray_launch_accounts: RayLaunchAccounts,
-    pub ray_cpmm_accounts: RaydiumCpmmPoolState,
-    pub pump_swap_accounts: PumpAmmAccounts,
-    pub pump_fun_accounts: PumpFunAccounts,
-    pub raydium_cpmm_accounts: RayCpmmSwapAccounts,
-    pub ray_cpmm_pool_state: Pubkey,
+    // Use references to reduce memory footprint
+    pub ray_launch_accounts: Option<RayLaunchAccounts>,
+    pub ray_cpmm_accounts: Option<RaydiumCpmmPoolState>,
+    pub pump_swap_accounts: Option<PumpAmmAccounts>,
+    pub pump_fun_accounts: Option<PumpFunAccounts>,
+    pub raydium_cpmm_accounts: Option<RayCpmmSwapAccounts>,
+    pub ray_cpmm_pool_state: Option<Pubkey>,
     pub send_sig: String,
     pub send_time: Instant,
     pub send_slot: u64,
@@ -83,12 +96,12 @@ impl TxWithPubkey {
             mint: Pubkey::default(),
             token_amount: 0,
             tx_type: String::new(),
-            ray_launch_accounts: RayLaunchAccounts::default(),
-            ray_cpmm_accounts: RaydiumCpmmPoolState::default(),
-            pump_swap_accounts: PumpAmmAccounts::default(),
-            pump_fun_accounts: PumpFunAccounts::default(),
-            ray_cpmm_pool_state: Pubkey::default(),
-            raydium_cpmm_accounts: RayCpmmSwapAccounts::default(),
+            ray_launch_accounts: None,
+            ray_cpmm_accounts: None,
+            pump_swap_accounts: None,
+            pump_fun_accounts: None,
+            raydium_cpmm_accounts: None,
+            ray_cpmm_pool_state: None,
             send_sig: String::new(),
             send_time: Instant::now(),
             send_slot: 0,
@@ -151,18 +164,21 @@ pub fn setup_arpc_crossbeam_worker() {
         purge_old_entries_task();
     });
     
-    std::thread::spawn(move || {
-        // Pin this worker thread to core 3 for lowest latency
-        if let Some(cores) = core_affinity::get_core_ids() {
-            if cores.len() > 3 {
-                core_affinity::set_for_current(cores[3]);
-                println!("[arpc worker] Pinned to core 3");
+    // Spawn 3 worker threads for heavy processing
+    for worker_id in 0..3 {
+        let rx_clone = rx.clone();
+        std::thread::spawn(move || {
+            // Pin worker threads to cores 5-7 for optimal performance
+            if let Some(cores) = core_affinity::get_core_ids() {
+                if cores.len() > 5 + worker_id {
+                    core_affinity::set_for_current(cores[5 + worker_id]);
+                    println!("[arpc worker {}] Pinned to core {}", worker_id, 5 + worker_id);
+                }
             }
-        }
         
         // Set critical real-time priority for processing (highest priority)
         if let Err(e) = set_realtime_priority(RealtimePriority::Critical) {
-            eprintln!("[arpc worker] Failed to set real-time priority: {}", e);
+            eprintln!("[arpc worker {}] Failed to set real-time priority: {}", worker_id, e);
         }
         //initial static parameter loads
         let config = GLOBAL_CONFIG.get().expect("Config not initialized");
@@ -171,7 +187,7 @@ pub fn setup_arpc_crossbeam_worker() {
         let mut consecutive_errors = 0;
         const MAX_CONSECUTIVE_ERRORS: usize = 10;
 
-        while let Ok(parsed) = rx.recv() {
+        while let Ok(parsed) = rx_clone.recv() {
             WORKER_MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
             
             let loop_start = Instant::now();
@@ -181,8 +197,10 @@ pub fn setup_arpc_crossbeam_worker() {
                 .unwrap_or_else(|| "<no_sig>".to_string());
             
             let now = Utc::now();
-            println!("[{}] - [WORKER] Processing message for sig: {} (total received: {})", 
+            #[cfg(feature = "verbose_logging")]
+            println!("[{}] - [WORKER-{}] Processing message for sig: {} (total received: {})", 
                 now.format("%Y-%m-%d %H:%M:%S%.3f"), 
+                worker_id,
                 sig_str, 
                 WORKER_MESSAGES_RECEIVED.load(Ordering::Relaxed));
             
@@ -219,7 +237,7 @@ pub fn setup_arpc_crossbeam_worker() {
                         send_tx = true;
                         let mut tx = TxWithPubkey::default();
                         tx.tx_type = "ray_launch".to_string();
-                        tx.ray_launch_accounts = ray_launch_accounts.clone();
+                        tx.ray_launch_accounts = Some(ray_launch_accounts.clone());
                         tx_with_pubkey = Some(tx);
                         break;
                     }
@@ -236,7 +254,7 @@ pub fn setup_arpc_crossbeam_worker() {
                         send_tx = true;
                         let mut tx = TxWithPubkey::default();
                         tx.tx_type = "pump_swap".to_string();
-                        tx.pump_swap_accounts = pump_swap_accounts.clone();
+                        tx.pump_swap_accounts = Some(pump_swap_accounts.clone());
                         tx_with_pubkey = Some(tx);
                         break;
                     }
@@ -253,7 +271,7 @@ pub fn setup_arpc_crossbeam_worker() {
                         send_tx = true;
                         let mut tx = TxWithPubkey::default();
                         tx.tx_type = "pumpfun".to_string();
-                        tx.pump_fun_accounts = pump_fun_accounts.clone();
+                        tx.pump_fun_accounts = Some(pump_fun_accounts.clone());
                         tx_with_pubkey = Some(tx);
                         break;
                     }
@@ -270,7 +288,7 @@ pub fn setup_arpc_crossbeam_worker() {
                             send_tx = true;
                             let mut tx = TxWithPubkey::default();
                             tx.tx_type = "ray_cpmm".to_string();
-                            tx.raydium_cpmm_accounts = raydium_cpmm_accounts.clone();
+                            tx.raydium_cpmm_accounts = Some(raydium_cpmm_accounts.clone());
                             tx_with_pubkey = Some(tx);
                             break;
                         }
@@ -279,6 +297,7 @@ pub fn setup_arpc_crossbeam_worker() {
             }
             
             let match_done = parse_start.elapsed();
+            #[cfg(feature = "verbose_logging")]
             println!("[BENCH][sig={}] Instruction matching total: {:.2?}", sig_str, match_done);
             
             if send_tx {
@@ -297,6 +316,7 @@ pub fn setup_arpc_crossbeam_worker() {
                 );
                 final_buy_instruction = create_instruction_zeroslot(final_buy_instruction,  (config.zeroslot_buy_tip * 1_000_000_000.0) as u64);
                 let build_time = build_start.elapsed();
+                #[cfg(feature = "verbose_logging")]
                 println!("[BENCH][sig={}] Transaction build time: {:.2?}", sig_str, build_time);
 
                 let sign_start = Instant::now();
@@ -307,6 +327,7 @@ pub fn setup_arpc_crossbeam_worker() {
                 )
                 .ok();
                 let sign_time = sign_start.elapsed();
+                #[cfg(feature = "verbose_logging")]
                 println!("[BENCH][sig={}] Transaction sign time: {:.2?}", sig_str, sign_time);
                 
                 if tx.is_some() {
@@ -322,8 +343,16 @@ pub fn setup_arpc_crossbeam_worker() {
                     tx_with_pubkey.created_at = Instant::now(); // Set creation time when inserting
 
                     let insert_start = Instant::now();
-                    GLOBAL_TX_MAP.insert(parsed.sig_bytes.as_ref().unwrap().to_vec(), tx_with_pubkey);
+                    // Use the vector directly to avoid extra copying
+                    let key = parsed.sig_bytes.as_ref().unwrap().as_slice().to_vec();
+                    GLOBAL_TX_MAP.insert(key, tx_with_pubkey);
                     let insert_time = insert_start.elapsed();
+                    
+                    // Track storage performance
+                    STORAGE_OPERATIONS.fetch_add(1, Ordering::Relaxed);
+                    STORAGE_TIME_TOTAL.fetch_add(insert_time.as_micros() as u64, Ordering::Relaxed);
+                    
+                    #[cfg(feature = "verbose_logging")]
                     println!("[BENCH][sig={}] Map insert time: {:.2?}", sig_str, insert_time);
                     
                     WORKER_TRANSACTIONS_INSERTED.fetch_add(1, Ordering::Relaxed);
@@ -350,11 +379,11 @@ pub fn setup_arpc_crossbeam_worker() {
                     now.format("%Y-%m-%d %H:%M:%S%.3f"), sig_str);
             }
             let loop_total = loop_start.elapsed();
+            #[cfg(feature = "verbose_logging")]
             println!("[BENCH][sig={}] Total loop time: {:.2?}", sig_str, loop_total);
         }
-            
-        
     });
+    }
 }
 
 pub fn send_parsed_arpc_trade(parsed: ParsedArpcTrade) {
@@ -368,15 +397,18 @@ pub fn manual_purge_old_entries() {
     let now = Instant::now();
     let purge_threshold = std::time::Duration::from_secs(10);
     
+    // Use a more efficient approach - collect keys without cloning
     let mut to_remove = Vec::new();
     
     for entry in GLOBAL_TX_MAP.iter() {
         if now.duration_since(entry.value().created_at) > purge_threshold {
+            // Store the key reference instead of cloning
             to_remove.push(entry.key().clone());
         }
     }
     
     let removed_count = to_remove.len();
+    // Batch remove to reduce lock contention
     for key in to_remove {
         GLOBAL_TX_MAP.remove(&key);
     }

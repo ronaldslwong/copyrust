@@ -4,5 +4,6 @@ pub mod raydium_launchpad;
 pub mod raydium_cpmm;
 pub mod consts;
 pub mod axiom;
+pub mod monitoring;
 // pub mod photon;
 // Add more as needed 

@@ -2,11 +2,7 @@ use crossbeam::channel::{unbounded, Sender};
 use once_cell::sync::OnceCell;
 use bs58;
 use core_affinity;
-use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Keypair;
-use solana_sdk::system_program;
-use solana_sdk::transaction::Transaction;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use chrono::Utc;
@@ -30,6 +26,7 @@ use borsh::BorshDeserialize;
 use std::time::Instant;
 use std::thread;
 use std::time::Duration;
+use crate::grpc::monitoring_client::GLOBAL_MONITORING_DATA;
 
 // Add global counters for monitoring triton worker performance
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -68,21 +65,25 @@ static PARSED_TX_SENDER: OnceCell<Sender<ParsedTx>> = OnceCell::new();
 pub fn setup_crossbeam_worker() {
     let (tx, rx) = unbounded::<ParsedTx>();
     PARSED_TX_SENDER.set(tx).unwrap();
-    std::thread::spawn(move || {
-        // Pin this worker thread to core 2 for lowest latency
-        if let Some(cores) = core_affinity::get_core_ids() {
-            if cores.len() > 2 {
-                core_affinity::set_for_current(cores[2]);
-                println!("[triton crossbeam worker] Pinned to core 2");
+    
+    // Spawn 3 worker threads for heavy processing
+    for worker_id in 0..3 {
+        let rx_clone = rx.clone();
+        std::thread::spawn(move || {
+            // Pin worker threads to cores 2-4 for optimal performance
+            if let Some(cores) = core_affinity::get_core_ids() {
+                if cores.len() > 2 + worker_id {
+                    core_affinity::set_for_current(cores[2 + worker_id]);
+                    println!("[triton crossbeam worker {}] Pinned to core {}", worker_id, 2 + worker_id);
+                }
             }
-        }
-        
-        // Set critical real-time priority for processing (highest priority)
-        if let Err(e) = set_realtime_priority(RealtimePriority::Critical) {
-            eprintln!("[triton crossbeam worker] Failed to set real-time priority: {}", e);
-        }
-        
-        while let Ok(parsed) = rx.recv() {
+            
+            // Set critical real-time priority for processing (highest priority)
+            if let Err(e) = set_realtime_priority(RealtimePriority::Critical) {
+                eprintln!("[triton crossbeam worker {}] Failed to set real-time priority: {}", worker_id, e);
+            }
+            
+            while let Ok(parsed) = rx_clone.recv() {
             TRITON_MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
             
             // Heavy processing here (sync, fast)
@@ -93,8 +94,9 @@ pub fn setup_crossbeam_worker() {
             };
 
             let now = Utc::now();
-            println!("[{}] - [TRITON] Processing message for sig: {} (total received: {})", 
+            println!("[{}] - [TRITON-{}] Processing message for sig: {} (total received: {})", 
                 now.format("%Y-%m-%d %H:%M:%S%.3f"), 
+                worker_id,
                 sig_detect, 
                 TRITON_MESSAGES_RECEIVED.load(Ordering::Relaxed));
 
@@ -115,24 +117,24 @@ pub fn setup_crossbeam_worker() {
             let mut found = None;
             if parsed.is_signer {
                 let map_size = GLOBAL_TX_MAP.len();
-                println!("[{}] - [TRITON] Searching GLOBAL_TX_MAP for sig: {} (map size: {})", 
-                    Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect, map_size);
+                println!("[{}] - [TRITON-{}] Searching GLOBAL_TX_MAP for sig: {} (map size: {})", 
+                    Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), worker_id, sig_detect, map_size);
                 
                 for entry in GLOBAL_TX_MAP.iter() {
                     if entry.value().send_sig.trim_matches('\"') == sig_detect {
                         found = Some(entry.value().clone()); // or entry.key().clone(), or both
                         TRITON_TRANSACTIONS_FOUND.fetch_add(1, Ordering::Relaxed);
-                        println!("[{}] - [TRITON] FOUND transaction in map for sig: {} (tx_type: {})", 
-                            Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect, entry.value().tx_type);
+                        println!("[{}] - [TRITON-{}] FOUND transaction in map for sig: {} (tx_type: {})", 
+                            Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), worker_id, sig_detect, entry.value().tx_type);
                         break;
                     }
                 }
                 
                 if found.is_none() {
-                    println!("[{}] - [TRITON] NOT FOUND transaction in map for sig: {} (map size: {})", 
-                        Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect, map_size);
+                    println!("[{}] - [TRITON-{}] NOT FOUND transaction in map for sig: {} (map size: {})", 
+                        Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), worker_id, sig_detect, map_size);
                 }
-                if let Some(tx_with_pubkey) = found {
+                if let Some(mut tx_with_pubkey) = found {
                     let now = Utc::now();
                     let mut send_tx: bool = false;
 
@@ -162,75 +164,90 @@ pub fn setup_crossbeam_worker() {
                     let mut bonding_curve_state = BondingCurve::default();
                     
                     if tx_type == "pumpfun" {
-                        bonding_curve_state = get_bonding_curve_state(&tx_with_pubkey.pump_fun_accounts);
-                        
-                        if bonding_curve_state.complete {
-                            tx_type = "pump_swap".to_string();
-                            println!("[{}] - [grpc] Pumpfun token has migrated to pumpswap - applying pumpswap sell logic", now.format("%Y-%m-%d %H:%M:%S%.3f"));
-
-                            //need to figure out how to build pump swap struct!!!!!!!!!!!!!
+                        if let Some(pump_fun_accounts) = &tx_with_pubkey.pump_fun_accounts {
+                            bonding_curve_state = get_bonding_curve_state(pump_fun_accounts);
+                            
+                            if bonding_curve_state.complete {
+                                tx_type = "pump_swap".to_string();
+                                println!("[{}] - [grpc] Pumpfun token has migrated to pumpswap - applying pumpswap sell logic", now.format("%Y-%m-%d %H:%M:%S%.3f"));
+                                tx_with_pubkey.pump_swap_accounts = Some(GLOBAL_MONITORING_DATA.get(&tx_with_pubkey.mint).unwrap().pump_fun_accounts.clone());
+                                //need to figure out how to build pump swap struct!!!!!!!!!!!!!
+                            }
                         }
                     }
 
                     if tx_type == "ray_launch" {
-                        let pool_state = tx_with_pubkey.ray_launch_accounts.pool_state;
-                        let res = match rpc.get_account_data(&pool_state) {
-                            Ok(data) => data,
-                            Err(e) => {
-                                eprintln!("[crossbeam_worker] Error: get_account_data (raylaunch) failed: {:?}", e);
-                                continue;
-                            }
-                        };
-                        let status = res[17];
-                        let migrate = res[20];
-                        
-                        if status > 0 {
-                            tx_type = "raylaunch_complete".to_string();
-                            if migrate == 1 {
-                                println!("[{}] - [grpc] Raylaunch pool is complete - applying Raydium CPMM sell logic", now.format("%Y-%m-%d %H:%M:%S%.3f"));
-                                tx_type = "ray_launch_cpmm".to_string();
+                        if let Some(ray_launch_accounts) = &tx_with_pubkey.ray_launch_accounts {
+                            let pool_state = ray_launch_accounts.pool_state;
+                            let res = match rpc.get_account_data(&pool_state) {
+                                Ok(data) => data,
+                                Err(e) => {
+                                    eprintln!("[crossbeam_worker] Error: get_account_data (raylaunch) failed: {:?}", e);
+                                    continue;
+                                }
+                            };
+                            let status = res[17];
+                            let migrate = res[20];
+                            
+                            if status > 0 {
+                                // tx_type = "ray_cpmm".to_string();
+                                if migrate == 1 {
+                                    println!("[{}] - [grpc] Raylaunch pool is complete - applying Raydium CPMM sell logic", now.format("%Y-%m-%d %H:%M:%S%.3f"));
+                                    tx_type = "ray_cpmm".to_string();
+                                    tx_with_pubkey.raydium_cpmm_accounts = Some(GLOBAL_MONITORING_DATA.get(&tx_with_pubkey.mint).unwrap().ray_cpmm_accounts.clone());
+                                }
                             }
                         }
                     }
 
                     if tx_type == "pumpfun" {
-                        sell_instruction = build_sell_instruction(
-                            tx_with_pubkey.token_amount,
-                            config.sell_slippage_bps,
-                            &tx_with_pubkey.pump_fun_accounts,
-                            bonding_curve_state,
-                        );
-                        send_tx = true;
+                        if let Some(pump_fun_accounts) = &tx_with_pubkey.pump_fun_accounts {
+                            sell_instruction = build_sell_instruction(
+                                tx_with_pubkey.token_amount,
+                                config.sell_slippage_bps,
+                                pump_fun_accounts,
+                                bonding_curve_state,
+                            );
+                            send_tx = true;
+                        }
                     }
                     if tx_type == "pump_swap" {
-                        sell_instruction = build_pump_sell_instruction(
-                            tx_with_pubkey.token_amount,
-                            config.sell_slippage_bps,
-                            &tx_with_pubkey.pump_swap_accounts,
-                        );
-                        send_tx = true;
+                        if let Some(pump_swap_accounts) = &tx_with_pubkey.pump_swap_accounts {
+                            sell_instruction = build_pump_sell_instruction(
+                                tx_with_pubkey.token_amount,
+                                config.sell_slippage_bps,
+                                pump_swap_accounts,
+                            );
+                            send_tx = true;
+                        }
                     }
                     if tx_type == "ray_launch" {
-                        sell_instruction = build_ray_launch_sell_instruction(
-                            tx_with_pubkey.token_amount,
-                            config.sell_slippage_bps,
-                            &tx_with_pubkey.ray_launch_accounts,
-                        );
-                        send_tx = true;
+                        if let Some(ray_launch_accounts) = &tx_with_pubkey.ray_launch_accounts {
+                            sell_instruction = build_ray_launch_sell_instruction(
+                                tx_with_pubkey.token_amount,
+                                config.sell_slippage_bps,
+                                ray_launch_accounts,
+                            );
+                            send_tx = true;
+                        }
                     }
                     if tx_type == "ray_cpmm" {
-                        sell_instruction = build_ray_cpmm_sell_instruction(
-                            tx_with_pubkey.token_amount,
-                            &tx_with_pubkey.raydium_cpmm_accounts,
-                        );
-                        send_tx = true;
+                        if let Some(raydium_cpmm_accounts) = &tx_with_pubkey.raydium_cpmm_accounts {
+                            sell_instruction = build_ray_cpmm_sell_instruction(
+                                tx_with_pubkey.token_amount,
+                                raydium_cpmm_accounts,
+                            );
+                            send_tx = true;
+                        }
                     }
                     if tx_type == "ray_launch_cpmm" {
-                        sell_instruction = build_ray_cpmm_sell_instruction(
-                            tx_with_pubkey.token_amount,
-                            &tx_with_pubkey.raydium_cpmm_accounts,
-                        );
-                        send_tx = true;
+                        if let Some(raydium_cpmm_accounts) = &tx_with_pubkey.raydium_cpmm_accounts {
+                            sell_instruction = build_ray_cpmm_sell_instruction(
+                                tx_with_pubkey.token_amount,
+                                raydium_cpmm_accounts,
+                            );
+                            send_tx = true;
+                        }
                     }
 
                     if send_tx {
@@ -350,6 +367,7 @@ pub fn setup_crossbeam_worker() {
             }
         }
     });
+    }
 }
 
 /// Call this from your parser to send a parsed message to the worker.

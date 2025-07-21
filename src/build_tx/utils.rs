@@ -146,17 +146,52 @@ pub fn get_pool_vault_amount(
     let keys = vec![base_vault, quote_vault];
     let rpc_client = GLOBAL_RPC_CLIENT.get().expect("RPC client not initialized");
 
-    let res = rpc_client.get_multiple_accounts_with_commitment(&keys, CommitmentConfig::processed())?;
+    // Add proper error handling to see what's going wrong
+    let res = match rpc_client.get_multiple_accounts_with_commitment(&keys, CommitmentConfig::processed()) {
+        Ok(response) => response,
+        Err(e) => {
+            eprintln!("!!!!!!RPC ERROR: Failed to get multiple accounts: {:?}", e);
+            eprintln!("!!!!!!Keys being requested: {:?}", keys);
+            return Err(format!("RPC call failed: {:?}", e).into());
+        }
+    };
     if res.value.len() != 2 || res.value[0].is_none() || res.value[1].is_none() {
         return Err("missing vault data".into());
     }
-    let base_data = res.value[0].as_ref().unwrap().data.as_slice();
-    let quote_data = res.value[1].as_ref().unwrap().data.as_slice();
+    let base_data = match res.value[0].as_ref() {
+        Some(account) => account.data.as_slice(),
+        None => {
+            eprintln!("!!!!!!RPC ERROR: Base vault account is None");
+            return Err("base vault account is None".into());
+        }
+    };
+    let quote_data = match res.value[1].as_ref() {
+        Some(account) => account.data.as_slice(),
+        None => {
+            eprintln!("!!!!!!RPC ERROR: Quote vault account is None");
+            return Err("quote vault account is None".into());
+        }
+    };
+    
     if base_data.len() < 72 || quote_data.len() < 72 {
+        eprintln!("!!!!!!RPC ERROR: Vault account data too short - base: {}, quote: {}", base_data.len(), quote_data.len());
         return Err("vault account data too short".into());
     }
-    let base_amount = u64::from_le_bytes(base_data[64..72].try_into().unwrap());
-    let quote_amount = u64::from_le_bytes(quote_data[64..72].try_into().unwrap());
+    
+    let base_amount = match base_data[64..72].try_into() {
+        Ok(bytes) => u64::from_le_bytes(bytes),
+        Err(e) => {
+            eprintln!("!!!!!!RPC ERROR: Failed to convert base amount bytes: {:?}", e);
+            return Err("failed to convert base amount".into());
+        }
+    };
+    let quote_amount = match quote_data[64..72].try_into() {
+        Ok(bytes) => u64::from_le_bytes(bytes),
+        Err(e) => {
+            eprintln!("!!!!!!RPC ERROR: Failed to convert quote amount bytes: {:?}", e);
+            return Err("failed to convert quote amount".into());
+        }
+    };
     if base_amount == 0 {
         return Err("zero base amount".into());
     }

@@ -231,12 +231,26 @@ pub fn build_pump_sell_instruction_raw(
 
     let pool_ac = get_pool_accounts(mint, rpc_client);
 
-    let account_data = rpc_client.get_account_data(&pool_ac.unwrap()).unwrap();
+    let account_data = match rpc_client.get_account_data(&pool_ac.unwrap()) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("!!!!!!RPC ERROR: Failed to get account data for pool: {:?}", e);
+            eprintln!("!!!!!!Pool account: {:?}", pool_ac.unwrap());
+            return instruction; // Return default instruction on error
+        }
+    };
     if account_data.iter().all(|&b| b == 0) {
         println!("account_data is all zeros!");
         return instruction; // or return an error, or handle as needed
     }
-    let pool_ac_detail = PoolAccountInfo::deserialize(&mut &account_data[8..]).unwrap();
+    let pool_ac_detail = match PoolAccountInfo::deserialize(&mut &account_data[8..]) {
+        Ok(detail) => detail,
+        Err(e) => {
+            eprintln!("!!!!!!RPC ERROR: Failed to deserialize pool account info: {:?}", e);
+            eprintln!("!!!!!!Account data length: {}", account_data.len());
+            return instruction; // Return default instruction on error
+        }
+    };
     println!("pool_ac_detail: {:?}", pool_ac_detail);
 
 
@@ -279,7 +293,14 @@ pub fn get_pump_swap_amount(
     let keys = vec![base_vault, quote_vault];
     let rpc_client = GLOBAL_RPC_CLIENT.get().expect("RPC client not initialized");
 
-    let res = rpc_client.get_multiple_accounts_with_commitment(&keys, CommitmentConfig::processed())?;
+    let res = match rpc_client.get_multiple_accounts_with_commitment(&keys, CommitmentConfig::processed()) {
+        Ok(response) => response,
+        Err(e) => {
+            eprintln!("!!!!!!RPC ERROR: Failed to get multiple accounts in get_pump_swap_amount: {:?}", e);
+            eprintln!("!!!!!!Keys being requested: {:?}", keys);
+            return Err(format!("RPC call failed: {:?}", e).into());
+        }
+    };
     if res.value.len() != 2 || res.value[0].is_none() || res.value[1].is_none() {
         return Err("missing vault data".into());
     }
@@ -432,3 +453,65 @@ pub fn derive_creator_vault_authority(creator: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(seeds, &program_id)
 }
 
+
+pub fn get_instruction_accounts_migrate_pump(
+    account_keys: &[Vec<u8>],
+    accounts: &[u8],
+) -> PumpAmmAccounts {
+
+    let mint = get_account(account_keys, accounts, 2);
+    let base_ata = spl_associated_token_account::get_associated_token_address(&get_wallet_keypair().pubkey(), &mint);
+    let quote_ata = spl_associated_token_account::get_associated_token_address(&get_wallet_keypair().pubkey(), &pump_swap_constants::WSOL);
+ 
+    let rpc_client = GLOBAL_RPC_CLIENT.get().expect("RPC client not initialized");
+    
+    // Add 1-second delay before RPC call to prevent rate limiting
+    println!("[PUMP_SWAP] Waiting 1 second before RPC call to prevent rate limiting...");
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    
+    let account_data = match rpc_client.get_account_data(&get_account(account_keys, accounts, 9)) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("!!!!!!RPC ERROR: Failed to get account data in get_instruction_accounts_migrate_pump: {:?}", e);
+            eprintln!("!!!!!!Account being requested: {:?}", get_account(account_keys, accounts, 9));
+            // Return default accounts on error
+            return PumpAmmAccounts::default();
+        }
+    };
+    if account_data.iter().all(|&b| b == 0) {
+        println!("account_data is all zeros!");
+    }
+    let pool_ac_detail = match PoolAccountInfo::deserialize(&mut &account_data[8..]) {
+        Ok(detail) => detail,
+        Err(e) => {
+            eprintln!("!!!!!!RPC ERROR: Failed to deserialize pool account info in migrate: {:?}", e);
+            eprintln!("!!!!!!Account data length: {}", account_data.len());
+            return PumpAmmAccounts::default(); // Return default accounts on error
+        }
+    };
+    let (creator_vault_authority, _) = derive_creator_vault_authority(&pool_ac_detail.coin_creator);
+    let creator_vault_ata = spl_associated_token_account::get_associated_token_address(&creator_vault_authority, &pump_swap_constants::WSOL);
+    
+    PumpAmmAccounts {
+        pool: get_account(account_keys, accounts, 9),
+        user: get_wallet_keypair().pubkey(),
+        global_config: pump_swap_constants::PUMP_SWAP_GLOBAL_CONFIG,
+        base_mint: mint,
+        quote_mint: pump_swap_constants::WSOL,
+        user_base_token_account: base_ata,
+        user_quote_token_account: quote_ata,
+        pool_base_token_account: get_account(account_keys, accounts, 17),
+        pool_quote_token_account: get_account(account_keys, accounts, 18),
+        protocol_fee_recipient: pump_swap_constants::PUMP_SWAP_PROTOCOL_FEE_RECIPIENT,
+        protocol_fee_token_account: pump_swap_constants::PUMP_SWAP_PROTOCOL_FEE_TOKEN_ACCOUNT,
+        base_token_program: get_account(account_keys, accounts, 19),
+        quote_token_program: spl_token::ID,
+        system_program: system_program::ID,
+        associated_token_program: pump_swap_constants::PUMP_SWAP_ASSOCIATED_TOKEN_PROGRAM,
+        event_authority: pump_swap_constants::PUMP_SWAP_EVENT_AUTHORITY,
+        pump_program: pump_swap_constants::PUMP_SWAP_PROGRAM_ID,
+        coin_creator_vault_ata: creator_vault_ata,
+        coin_creator_vault_authority: creator_vault_authority,
+    }
+    // TODO: Map the correct indices for each field as per the actual instruction layout
+}

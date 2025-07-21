@@ -18,6 +18,7 @@ use crate::build_tx::utils::get_pool_vault_amount;
 use crate::build_tx::utils::SwapDirection;
 use crate::build_tx::utils::get_account;
 use crate::constants::raydium_cpmm::RAYDIUM_CPMM_AUTHORITY;
+use crate::constants::raydium_cpmm::RAYDIUM_CPMM_AMM_CONFIG;
 use crate::constants::consts::WSOL;
 
 #[derive(Debug, Clone)]
@@ -451,7 +452,7 @@ pub fn get_instruction_accounts(
     RayCpmmSwapAccounts {
         wallet: get_wallet_keypair().pubkey(),
         authority: RAYDIUM_CPMM_AUTHORITY,
-        amm_config: get_account(&account_keys, &accounts, 2),
+        amm_config: RAYDIUM_CPMM_AMM_CONFIG,
         pool_state: get_account(&account_keys, &accounts, 3),
         quote_ata: quote_ata,
         base_ata: base_ata,
@@ -467,10 +468,58 @@ pub fn get_instruction_accounts(
 }
 
 pub fn get_pool_state(ray_cpmm_accounts: &RayCpmmSwapAccounts) -> RaydiumCpmmPoolState {
-    let client = GLOBAL_RPC_CLIENT.get().expect("RPC client not initialized");
-    let account_data = client.get_account_data(&ray_cpmm_accounts.pool_state).expect("Failed to get account data");
+    let client = match GLOBAL_RPC_CLIENT.get() {
+        Some(client) => client,
+        None => {
+            eprintln!("!!!!!!RPC ERROR: RPC client not initialized");
+            return RaydiumCpmmPoolState::default();
+        }
+    };
     
-    let pool_state = RaydiumCpmmPoolState::deserialize(&mut &account_data[8..]).expect("Failed to deserialize bonding curve state");
+    let account_data = match client.get_account_data(&ray_cpmm_accounts.pool_state) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("!!!!!!RPC ERROR: Failed to get account data for pool state: {:?}", e);
+            eprintln!("!!!!!!Pool state account: {:?}", ray_cpmm_accounts.pool_state);
+            return RaydiumCpmmPoolState::default();
+        }
+    };
+    
+    let pool_state = match RaydiumCpmmPoolState::deserialize(&mut &account_data[8..]) {
+        Ok(state) => state,
+        Err(e) => {
+            eprintln!("!!!!!!RPC ERROR: Failed to deserialize pool state: {:?}", e);
+            eprintln!("!!!!!!Account data length: {}", account_data.len());
+            return RaydiumCpmmPoolState::default();
+        }
+    };
     
     pool_state
+}
+
+/// Dummy function to create RayCpmmSwapAccounts for migrate instruction
+/// Based on get_instruction_accounts from ray_cpmm.rs
+pub fn get_instruction_accounts_migrate(
+    account_keys: &[Vec<u8>],
+    accounts: &[u8],
+) -> RayCpmmSwapAccounts {
+    let mint = get_account(account_keys, accounts, 1);
+    let base_ata = spl_associated_token_account::get_associated_token_address(&get_wallet_keypair().pubkey(), &mint);
+    let quote_ata = spl_associated_token_account::get_associated_token_address(&get_wallet_keypair().pubkey(), &WSOL);
+ 
+    RayCpmmSwapAccounts {
+        wallet: get_wallet_keypair().pubkey(),
+        authority: RAYDIUM_CPMM_AUTHORITY,
+        amm_config: get_account(&account_keys, &accounts, 10),
+        pool_state: get_account(&account_keys, &accounts, 17),
+        quote_ata: quote_ata,
+        base_ata: base_ata,
+        token_0_vault: get_account(&account_keys, &accounts, 20),
+        token_1_vault: get_account(&account_keys, &accounts, 19),
+        token_0_program: get_account(&account_keys, &accounts, 23),
+        token_1_program: get_account(&account_keys, &accounts, 22),
+        token_0_mint: WSOL,
+        token_1_mint: mint,
+        observation_key: get_account(&account_keys, &accounts, 12),
+    }
 }

@@ -36,9 +36,9 @@ pub fn raydium_cpmm_build_buy_tx(
     let slippage_factor = 1.0 + slippage_basis_points as f64 / 10000.0;
 
     // println!("mint: {:?}, u1: {:?}, u2: {:?}", mint, u1, u2);
-    let tx_mint = get_account(account_keys, accounts, 10);
-    println!("tx_mint: {:?}" , tx_mint );
-    if tx_mint != WSOL {
+    let tx_mint = get_account(&account_keys, &accounts, 11);
+    println!("!!!tx_mint: {:?}" , tx_mint );
+    if tx_mint == WSOL {
         return (
             Instruction {
                 program_id: Pubkey::new_unique(),
