@@ -4,10 +4,10 @@ use bs58;
 use core_affinity;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::instruction::Instruction;
-use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use chrono::Utc;
 use crate::utils::logger::{log_event, setup_event_logger, EventType};
 use crate::utils::rt_scheduler::{set_realtime_priority, RealtimePriority};
+
 // use tokio::time::{sleep, Duration};
 use crate::grpc::arpc_worker::GLOBAL_TX_MAP;
 use crate::build_tx::pump_fun::{build_sell_instruction, get_bonding_curve_state, BondingCurve};
@@ -18,7 +18,8 @@ use crate::build_tx::ray_launch::build_ray_launch_sell_instruction;
 use crate::build_tx::ray_cpmm::{build_ray_cpmm_sell_instruction};
 use crate::send_tx::rpc::send_tx_via_send_rpcs;
 use crate::send_tx::zero_slot::{create_instruction_zeroslot, send_tx_zeroslot};
-use crate::build_tx::tx_builder::{build_and_sign_transaction, create_instruction};
+use crate::build_tx::tx_builder::{create_instruction};
+use crate::build_tx::tx_builder::build_and_sign_transaction_fast;
 use solana_sdk::signature::Signer;
 use crate::config_load::GLOBAL_CONFIG;
 use crate::init::initialize::GLOBAL_RPC_CLIENT;
@@ -27,6 +28,8 @@ use std::time::Instant;
 use std::thread;
 use std::time::Duration;
 use crate::grpc::monitoring_client::GLOBAL_MONITORING_DATA;
+use crate::send_tx::jito::send_jito_bundle;
+use crate::send_tx::jito::create_instruction_jito;
 
 // Add global counters for monitoring triton worker performance
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -151,7 +154,9 @@ pub fn setup_crossbeam_worker() {
                         Some((parsed.slot.unwrap() - tx_with_pubkey.send_slot) as i64)
                     );
 
-                    thread::sleep(Duration::from_secs(4));
+                    // Use configurable wait time instead of hardcoded 4 seconds
+                    let wait_time_secs = config.wait_time as u64;
+                    thread::sleep(Duration::from_secs(wait_time_secs));
                     let mut sell_instruction: Instruction = Instruction{
                         program_id: Pubkey::new_unique(),
                         accounts: vec![],
@@ -262,7 +267,8 @@ pub fn setup_crossbeam_worker() {
                         );
                         // let final_instruction = create_instruction_nextblock(compute_budget_instruction,  (config.nextblock_sell_tip * 1_000_000_000.0) as u64);
                         let final_instruction = create_instruction_zeroslot(compute_budget_instruction,  (config.zeroslot_sell_tip * 1_000_000_000.0) as u64);
-                        let tx = build_and_sign_transaction(
+                        // let final_instruction = create_instruction_jito(compute_budget_instruction,  (config.zeroslot_sell_tip * 1_000_000_000.0) as u64);
+                        let tx = build_and_sign_transaction_fast(
                             rpc,
                             &final_instruction,
                             get_wallet_keypair(),
@@ -281,6 +287,7 @@ pub fn setup_crossbeam_worker() {
                             ASYNC_RUNTIME.spawn(async move {
                                 let send_start = Instant::now();
                                 match send_tx_zeroslot(&signed_tx_clone).await {
+                                    // match send_jito_bundle(&signed_tx_clone).await {
                                     Ok(sig) => {
                                         TRITON_TRANSACTIONS_SENT.fetch_add(1, Ordering::Relaxed);
                                         let send_time = send_start.elapsed();
@@ -330,6 +337,7 @@ pub fn setup_crossbeam_worker() {
                         ASYNC_RUNTIME.spawn(async move {
                             let send_start = Instant::now();
                             match send_tx_zeroslot(&tx_clone).await {
+                            // match send_jito_bundle(&tx_clone).await {
                                 Ok(sig) => {
                                     TRITON_TRANSACTIONS_SENT.fetch_add(1, Ordering::Relaxed);
                                     let send_time = send_start.elapsed();
@@ -348,6 +356,7 @@ pub fn setup_crossbeam_worker() {
                                     if let Some(mut tx_with_pubkey) = GLOBAL_TX_MAP.get_mut(&sig_bytes_clone) {
                                         tx_with_pubkey.send_sig = sig.clone();
                                         tx_with_pubkey.send_slot = slot;
+                                        println!("[{}] - [TRITON] Saved sig: {} to GLOBAL_TX_MAP", Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig);
                                     }
                                 }
                                 Err(e) => {

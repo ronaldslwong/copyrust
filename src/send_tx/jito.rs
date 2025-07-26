@@ -19,6 +19,13 @@ use jito::packet::Packet;
 use thiserror::Error;
 use std::str::FromStr;
 use crate::send_tx::jito_authenticator::ClientInterceptor;
+use solana_sdk::{
+    pubkey::Pubkey,
+    system_instruction,
+};
+use solana_sdk::instruction::Instruction;
+use rand::seq::SliceRandom;
+use crate::init::wallet_loader::get_wallet_keypair;
 
 use tonic::{
     codegen::{Body, Bytes, InterceptedService, StdError},
@@ -29,6 +36,17 @@ use tonic::{
 
 pub type BlockEngineConnectionResult<T> = Result<T, BlockEngineConnectionError>;
 
+// List of Jito tip accounts
+static JITO_TIP_ACCOUNTS: &[&str] = &[
+    "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
+    "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe",
+    "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
+    "ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49",
+    "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh",
+    "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt",
+    "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL",
+    "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT",
+];
 
 // Import generated proto clients and types
 pub mod jito {
@@ -134,7 +152,7 @@ pub async fn init_jito_grpc_sender(block_engine_url: &str) {
     let searcher_client =
         SearcherServiceClient::with_interceptor(searcher_channel, client_interceptor);
 
-    // let access_token = authenticate(&url, keypair).await.expect("Failed to authenticate with Jito block engine");
+    let access_token = authenticate(&url, keypair).await.expect("Failed to authenticate with Jito block engine");
     // let searcher_channel = create_grpc_channel(block_engine_url).await.expect("Failed to create gRPC channel");
 
     // let interceptor = ApiTokenInterceptor {
@@ -147,21 +165,21 @@ pub async fn init_jito_grpc_sender(block_engine_url: &str) {
     let sender = JitoGrpcSender { client: grpc_client };
 
     JITO_GRPC_SENDER.set(Mutex::new(sender)).ok();
-    // ACCESS_TOKEN.set(access_token).ok();
+    ACCESS_TOKEN.set(access_token).ok();
 }
 
 
 pub async fn create_grpc_channel(url: &str) -> BlockEngineConnectionResult<Channel> {
+
     let mut endpoint = Endpoint::from_shared(url.to_string()).expect("invalid url");
-    if url.starts_with("httpts") {
-        endpoint = endpoint.tls_config(tonic::transport::ClientTlsConfig::new())?;
+    if url.starts_with("https") {
+        endpoint = endpoint.tls_config(tonic::transport::ClientTlsConfig::new().with_native_roots())?;
     }
     Ok(endpoint.connect().await?)
 }
 
 /// Send a bundle via Jito gRPC (like SendGrpcBundle in Go)
-pub async fn send_jito_bundle(tx: &Transaction) -> Result<(), Box<dyn std::error::Error>> {
-    let sender = JITO_GRPC_SENDER.get().expect("JitoGrpcSender not initialized").lock().unwrap();
+pub async fn send_jito_bundle(tx: &Transaction) -> Result<String, Box<dyn std::error::Error>> {
     let access_token = ACCESS_TOKEN.get().expect("Access token not initialized");
     let tx_bytes = bincode::serialize(tx)?;
     let packet = Packet {
@@ -181,18 +199,51 @@ pub async fn send_jito_bundle(tx: &Transaction) -> Result<(), Box<dyn std::error
         "authorization",
         MetadataValue::try_from(format!("Bearer {}", access_token)).unwrap(),
     );
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        let mut client = sender.client.client.clone();
-        let _resp = client.send_bundle(request).await?;
-        println!("[JITO] Sent bundle");
-        Ok(())
-    })
+    
+    // Clone the client before the async operation to avoid holding the lock
+    let mut client = {
+        let sender = JITO_GRPC_SENDER.get().expect("JitoGrpcSender not initialized").lock().unwrap();
+        sender.client.client.clone()
+    };
+    
+    let resp = client.send_bundle(request).await?;
+    let bundle_id = resp.into_inner().uuid;  // Extract bundle ID
+    let now = chrono::Utc::now();
+    println!("[{}] - [JITO] Sent bundle with ID: {}", 
+        now.format("%Y-%m-%d %H:%M:%S%.3f"), bundle_id);
+    Ok(bundle_id)
 }
 
 // Example usage:
 // init_jito_grpc_sender("http://block-engine-url:port");
 // send_jito_bundle(&tx)?; 
+
+pub fn jito_tip(tip: u64, from_pubkey: &Pubkey) -> Instruction {
+    // Randomly select a tip account from the list
+    let tip_account = JITO_TIP_ACCOUNTS
+        .choose(&mut rand::thread_rng())
+        .expect("Failed to select random tip account");
+    
+    let tip_pubkey = Pubkey::from_str(tip_account).expect("Invalid pubkey");
+    system_instruction::transfer(from_pubkey, &tip_pubkey, tip)
+}
+
+pub fn create_instruction_jito(
+    instructions: Vec<Instruction>,
+    tip: u64,
+) -> Vec<Instruction> {
+
+    let keypair: &'static Keypair = get_wallet_keypair();
+
+    let tip_ix = jito_tip(
+        tip,
+        &keypair.pubkey(),
+    );
+
+    let mut result = vec![tip_ix];
+    result.extend(instructions);
+    result
+}
 
 #[derive(Clone)]
 pub struct ApiTokenInterceptor {

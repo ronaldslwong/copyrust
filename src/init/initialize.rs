@@ -16,7 +16,7 @@ use crate::send_tx::rpc::keep_blockhash_fresh;
 use solana_sdk::hash::Hash;
 use tokio::sync::RwLock;
 use crate::send_tx::rpc::GLOBAL_LATEST_BLOCKHASH;
-// use crate::send_tx::jito::init_jito_grpc_sender;
+use crate::send_tx::jito::init_jito_grpc_sender;
 pub static GLOBAL_RPC_CLIENT: OnceCell<RpcClient> = OnceCell::new();
 
 
@@ -59,8 +59,8 @@ pub async fn initialize() -> (Config, Vec<DexPairData>) {
     setup_arpc_crossbeam_worker();
     println!("ARPC crossbeam worker initialized");
 
-    // init_jito_grpc_sender(&config.jito_url).await;
-    // println!("Jito gRPC sender initialized");
+    init_jito_grpc_sender(&config.jito_url).await;
+    println!("Jito gRPC sender initialized");
 
     if !config.birdeye_api.is_empty() {
         match load_birdeye_token_addresses(&config.birdeye_api, config.bird_eye_num_token as usize)

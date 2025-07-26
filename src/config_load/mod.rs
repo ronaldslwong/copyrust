@@ -23,12 +23,12 @@ pub struct Config {
     pub cu_price0_slot: u64,
     #[serde(rename = "jitoUrl")]
     pub jito_url: String,
-    #[serde(rename = "jitoTip")]
-    pub jito_tip: f64,
+    #[serde(rename = "jito_buy_tip")]
+    pub jito_buy_tip: f64,
+    #[serde(rename = "jito_sell_tip")]
+    pub jito_sell_tip: f64,
     #[serde(rename = "cuPriceJito")]
     pub cu_price_jito: u64,
-    #[serde(rename = "jitoBlockEngine")]
-    pub jito_block_engine: String,
     #[serde(rename = "solFilter")]
     pub sol_filter: f64,
     #[serde(rename = "cuPrice")]
@@ -105,6 +105,8 @@ pub struct Config {
     pub nextblock_buy_tip: f64,
     #[serde(rename = "nextblock_sell_tip")]
     pub nextblock_sell_tip: f64,
+    #[serde(rename = "waitTime")]
+    pub wait_time: f64,
 }
 
 pub fn load_config() -> Config {

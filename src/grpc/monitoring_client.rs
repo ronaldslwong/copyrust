@@ -65,7 +65,7 @@ pub fn get_monitoring_stats() -> (usize, usize, usize) {
 // - Lock contention during removal operations
 
 /// Purge old monitoring data (older than 30 seconds)
-fn purge_old_monitoring_data() {
+pub fn purge_old_monitoring_data() {
     use std::time::Duration;
     
     loop {
@@ -88,7 +88,9 @@ fn purge_old_monitoring_data() {
         // Remove old entries
         for key in to_remove {
             if let Some((_, data)) = GLOBAL_MONITORING_DATA.remove(&key) {
-                println!("[Monitoring] Removed old monitoring data for mint: {} (age: {}s)", 
+                let now = Utc::now();
+                println!("[{}] - [Monitoring] Removed old monitoring data for mint: {} (age: {}s)", 
+                    now.format("%Y-%m-%d %H:%M:%S%.3f"),
                     data.mint_pubkey, 
                     current_time - data.timestamp
                 );
@@ -97,8 +99,44 @@ fn purge_old_monitoring_data() {
         
         // Log map size periodically
         if GLOBAL_MONITORING_DATA.len() > 0 {
-            println!("[Monitoring] GLOBAL_MONITORING_DATA size: {}", GLOBAL_MONITORING_DATA.len());
+            let now = Utc::now();
+            println!("[{}] - [Monitoring] GLOBAL_MONITORING_DATA size: {}", 
+                now.format("%Y-%m-%d %H:%M:%S%.3f"),
+                GLOBAL_MONITORING_DATA.len()
+            );
         }
+    }
+}
+
+/// Emergency cleanup function for memory leak situations
+pub fn emergency_cleanup_monitoring_data() {
+    let current_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    
+    let mut to_remove = Vec::new();
+    
+    // Remove data older than 60 seconds (more aggressive)
+    for entry in GLOBAL_MONITORING_DATA.iter() {
+        if current_time - entry.value().timestamp > 60 { // 60 seconds
+            to_remove.push(entry.key().clone());
+        }
+    }
+    
+    // Remove old entries
+    let removed_count = to_remove.len();
+    for key in to_remove {
+        GLOBAL_MONITORING_DATA.remove(&key);
+    }
+    
+    if removed_count > 0 {
+        let now = Utc::now();
+        println!("[{}] - [MONITORING] Emergency cleanup: removed {} entries, remaining: {}", 
+            now.format("%Y-%m-%d %H:%M:%S%.3f"), 
+            removed_count, 
+            GLOBAL_MONITORING_DATA.len()
+        );
     }
 }
 
@@ -108,9 +146,13 @@ pub async fn start_arpc_monitoring_subscription(
     programs_to_monitor: Vec<String>,
     config: Arc<Config>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("[Monitoring ARPC] Attempting to connect to: {}", endpoint);
+    let now = Utc::now();
+    println!("[{}] - [Monitoring ARPC] Attempting to connect to: {}", 
+        now.format("%Y-%m-%d %H:%M:%S%.3f"), endpoint);
     let mut client = ArpcServiceClient::connect(endpoint.to_string()).await?;
-    println!("[Monitoring ARPC] Connection successful!");
+    let now = Utc::now();
+    println!("[{}] - [Monitoring ARPC] Connection successful!", 
+        now.format("%Y-%m-%d %H:%M:%S%.3f"));
     let mut filters: HashMap<String, SubscribeRequestFilterTransactions> = HashMap::new();
     
     if !programs_to_monitor.is_empty() {
@@ -132,13 +174,19 @@ pub async fn start_arpc_monitoring_subscription(
         transactions: filters,
         ping_id: None,
     };
-    println!("[Monitoring ARPC] Sending subscription request: {:?}", initial_request);
+    let now = Utc::now();
+    println!("[{}] - [Monitoring ARPC] Sending subscription request: {:?}", 
+        now.format("%Y-%m-%d %H:%M:%S%.3f"), initial_request);
     tx.send(initial_request).await?;
 
     let mut stream = client.subscribe(request_stream).await?.into_inner();
 
-    println!("[Monitoring ARPC] DEX activity subscription established. Monitoring {} programs...", programs_to_monitor.len());
-    println!("[Monitoring ARPC] Programs to monitor: {:?}", programs_to_monitor);
+    let now = Utc::now();
+    println!("[{}] - [Monitoring ARPC] DEX activity subscription established. Monitoring {} programs...", 
+        now.format("%Y-%m-%d %H:%M:%S%.3f"), programs_to_monitor.len());
+    let now = Utc::now();
+    println!("[{}] - [Monitoring ARPC] Programs to monitor: {:?}", 
+        now.format("%Y-%m-%d %H:%M:%S%.3f"), programs_to_monitor);
 
     // Start the purging task in a separate thread
     std::thread::spawn(move || {
@@ -174,17 +222,23 @@ pub async fn start_arpc_monitoring_subscription(
     if let Some(cores) = core_affinity::get_core_ids() {
         if cores.len() > 15 {
             core_affinity::set_for_current(cores[15]);
-            println!("[Monitoring ARPC] Thread pinned to core 15 (last core)");
+            let now = Utc::now();
+            println!("[{}] - [Monitoring ARPC] Thread pinned to core 15 (last core)", 
+                now.format("%Y-%m-%d %H:%M:%S%.3f"));
         } else if cores.len() > 4 {
             // Fallback to core 4 if we don't have 16 cores
             core_affinity::set_for_current(cores[4]);
-            println!("[Monitoring ARPC] Thread pinned to core 4 (fallback)");
+            let now = Utc::now();
+            println!("[{}] - [Monitoring ARPC] Thread pinned to core 4 (fallback)", 
+                now.format("%Y-%m-%d %H:%M:%S%.3f"));
         }
     }
     
     // Set lower priority for monitoring (shouldn't interfere with trading)
     if let Err(e) = crate::utils::rt_scheduler::set_realtime_priority(crate::utils::rt_scheduler::RealtimePriority::Low) {
-        eprintln!("[Monitoring ARPC] Failed to set real-time priority: {}", e);
+        let now = Utc::now();
+        eprintln!("[{}] - [Monitoring ARPC] Failed to set real-time priority: {}", 
+            now.format("%Y-%m-%d %H:%M:%S%.3f"), e);
     }
 
     while let Some(result) = stream.message().await? {
@@ -312,7 +366,9 @@ fn parse_raydium_launchpad_instruction(
     slot: u64,
 ) {
     // Parse Raydium Launchpad specific logic
-    println!("[PARSER] Raydium Launchpad migration instruction detected: sig={}, slot={}", signature, slot);
+    let now = Utc::now();
+    println!("[{}] - [PARSER] Raydium Launchpad migration instruction detected: sig={}, slot={}", 
+        now.format("%Y-%m-%d %H:%M:%S%.3f"), signature, slot);
     
     let migrated_accounts = get_instruction_accounts_migrate(&account_keys, &instruction.accounts);
 
@@ -336,8 +392,12 @@ fn parse_raydium_launchpad_instruction(
     // Store in global map
     GLOBAL_MONITORING_DATA.insert(mint_pubkey, monitoring_data.clone());
     
-    println!("[PARSER] Stored monitoring data for mint: {}", mint_pubkey);
-    println!("[PARSER] Global monitoring data size: {}", GLOBAL_MONITORING_DATA.len());
+    let now = Utc::now();
+    println!("[{}] - [PARSER] Stored monitoring data for mint: {}", 
+        now.format("%Y-%m-%d %H:%M:%S%.3f"), mint_pubkey);
+    let now = Utc::now();
+    println!("[{}] - [PARSER] Global monitoring data size: {}", 
+        now.format("%Y-%m-%d %H:%M:%S%.3f"), GLOBAL_MONITORING_DATA.len());
     
 }
 
@@ -350,7 +410,9 @@ fn parse_pump_fun_instruction(
     slot: u64,
 ) {
     // Parse instruction data bytes
-    println!("[PARSER] Instruction data: sig={}, slot={}", signature, slot);
+    let now = Utc::now();
+    println!("[{}] - [PARSER] Instruction data: sig={}, slot={}", 
+        now.format("%Y-%m-%d %H:%M:%S%.3f"), signature, slot);
     
     // Example: Check for specific instruction discriminators
     let migrated_accounts = get_instruction_accounts_migrate_pump(&account_keys, &instruction.accounts);
@@ -375,8 +437,12 @@ fn parse_pump_fun_instruction(
     // Store in global map
     GLOBAL_MONITORING_DATA.insert(mint_pubkey, monitoring_data.clone());
     
-    println!("[PARSER] Stored monitoring data for mint: {}", mint_pubkey);
-    println!("[PARSER] Global monitoring data size: {}", GLOBAL_MONITORING_DATA.len());
+    let now = Utc::now();
+    println!("[{}] - [PARSER] Stored monitoring data for mint: {}", 
+        now.format("%Y-%m-%d %H:%M:%S%.3f"), mint_pubkey);
+    let now = Utc::now();
+    println!("[{}] - [PARSER] Global monitoring data size: {}", 
+        now.format("%Y-%m-%d %H:%M:%S%.3f"), GLOBAL_MONITORING_DATA.len());
     
 }
 
@@ -390,18 +456,30 @@ pub async fn start_arpc_monitoring_with_retry(
     let mut attempt = 0;
     loop {
         attempt += 1;
-        println!("[Monitoring ARPC] Attempt {} to connect and start monitoring...", attempt);
-        println!("[Monitoring ARPC] Connecting to endpoint: {}", endpoint);
+        let now = Utc::now();
+        println!("[{}] - [Monitoring ARPC] Attempt {} to connect and start monitoring...", 
+            now.format("%Y-%m-%d %H:%M:%S%.3f"), attempt);
+        let now = Utc::now();
+        println!("[{}] - [Monitoring ARPC] Connecting to endpoint: {}", 
+            now.format("%Y-%m-%d %H:%M:%S%.3f"), endpoint);
         let result = start_arpc_monitoring_subscription(endpoint, programs_to_monitor.clone(), config.clone()).await;
         match result {
             Ok(_) => {
-                println!("[Monitoring ARPC] Subscription ended gracefully.");
+                let now = Utc::now();
+                println!("[{}] - [Monitoring ARPC] Subscription ended gracefully.", 
+                    now.format("%Y-%m-%d %H:%M:%S%.3f"));
                 break;
             }
             Err(e) => {
-                eprintln!("[Monitoring ARPC] Subscription error: {}", e);
-                eprintln!("[Monitoring ARPC] Error details: {:?}", e);
-                eprintln!("[Monitoring ARPC] Retrying in 10 seconds...");
+                let now = Utc::now();
+                eprintln!("[{}] - [Monitoring ARPC] Subscription error: {}", 
+                    now.format("%Y-%m-%d %H:%M:%S%.3f"), e);
+                let now = Utc::now();
+                eprintln!("[{}] - [Monitoring ARPC] Error details: {:?}", 
+                    now.format("%Y-%m-%d %H:%M:%S%.3f"), e);
+                let now = Utc::now();
+                eprintln!("[{}] - [Monitoring ARPC] Retrying in 10 seconds...", 
+                    now.format("%Y-%m-%d %H:%M:%S%.3f"));
                 sleep(Duration::from_secs(10)).await;
             }
         }

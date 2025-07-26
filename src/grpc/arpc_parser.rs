@@ -8,9 +8,16 @@ use std::sync::Arc;
 use crate::constants::raydium_launchpad::RAYDIUM_LAUNCHPAD_PROGRAM_ID_BYTES;
 use crate::constants::axiom::{AXIOM_PUMP_SWAP_PROGRAM_ID_BYTES, AXIOM_PUMP_FUN_PROGRAM_ID_BYTES};
 use crate::constants::raydium_cpmm::RAYDIUM_CPMM_PROGRAM_ID_BYTES;
+use dashmap::DashMap;
+use once_cell::sync::Lazy;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // use chrono::Local;
 
+// Global deduplication set - tracks processed signatures with timestamps
+static PROCESSED_SIGNATURES: Lazy<DashMap<String, u64>> = Lazy::new(|| {
+    DashMap::new()
+});
 
 // Global atomic counter for ARPC messages
 static ARPC_MESSAGE_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -18,6 +25,68 @@ static ARPC_MESSAGE_COUNT: AtomicUsize = AtomicUsize::new(0);
 // Function to get the current count (for testing/logging)
 pub fn get_arpc_message_count() -> usize {
     ARPC_MESSAGE_COUNT.load(Ordering::Relaxed)
+}
+
+// Function to get deduplication stats
+pub fn get_dedup_stats() -> usize {
+    PROCESSED_SIGNATURES.len()
+}
+
+// Function to clean up old signatures (older than 5 seconds)
+pub fn cleanup_old_signatures() {
+    let current_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    
+    let mut to_remove = Vec::new();
+    
+    // Collect signatures older than 10 seconds
+    for entry in PROCESSED_SIGNATURES.iter() {
+        if current_time - entry.value() > 10 {
+            to_remove.push(entry.key().clone());
+        }
+    }
+    
+    // Remove old signatures
+    let removed_count = to_remove.len();
+    for sig in to_remove {
+        PROCESSED_SIGNATURES.remove(&sig);
+    }
+    
+    // Log cleanup if we removed many entries
+    if removed_count > 100 {
+        let now = chrono::Utc::now();
+        println!("[{}] - [DEDUP] Cleaned up {} old signatures, remaining: {}", 
+            now.format("%Y-%m-%d %H:%M:%S%.3f"), 
+            removed_count, 
+            PROCESSED_SIGNATURES.len()
+        );
+    }
+}
+
+// Function to check if signature was already processed
+fn is_signature_processed(sig: &str) -> bool {
+    let current_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    
+    // Clean up old signatures periodically
+    if current_time % 5 == 0 { // Every 5 seconds
+        cleanup_old_signatures();
+    }
+    
+    // Check if signature exists and is recent (within last 5 seconds)
+    if let Some(timestamp) = PROCESSED_SIGNATURES.get(sig) {
+        if current_time - *timestamp < 5 {
+            return true; // Recently processed
+        }
+    }
+    
+    // Mark as processed
+    PROCESSED_SIGNATURES.insert(sig.to_string(), current_time);
+    false
 }
 
 // Call this in your ARPC message handler:
@@ -49,6 +118,12 @@ pub async fn process_arpc_msg(resp: &SubscribeResponse, _config: &Config) -> Opt
     
     // Extract signature string for later use
     let sig_string = sig_bytes.as_ref().map(|s| bs58::encode(s.as_slice()).into_string()).unwrap_or_default();
+    
+    // DEDUPLICATION: Check if we've already processed this signature
+    if is_signature_processed(&sig_string) {
+        // Skip processing - already handled
+        return None;
+    }
     
     if let Some(ref sig_bytes) = sig_bytes {
         log_event(EventType::ArpcDetectionProcessing, sig_bytes, detection_time, None);

@@ -12,6 +12,8 @@ sendRPC =[
   "http://86.105.224.13:8899",
 ]
 
+waitTime = 3.0
+
 #birdEyeApi = "999eb784b14841818a1ca3815b957e52"
 birdEyeApi = ""
 birdEyeNumToken = 50
@@ -31,10 +33,10 @@ zeroslot_buy_tip = 0.001
 zeroslot_sell_tip = 0.001
 cuPrice0Slot = 100_000
 
-jitoUrl = "https://frankfurt.mainnet.block-engine.jito.wtf:443"
-jitoTip = 0.001
+jitoUrl = "https://ny.mainnet.block-engine.jito.wtf:443"
+jito_buy_tip = 0.001
+jito_sell_tip = 0.001
 cuPriceJito = 100_000
-jitoBlockEngine = "fra"
 
 
 solFilter = 0.000100
@@ -46,9 +48,9 @@ accountsMonitor = [
   #"suqh5sH7r8HyJ7q8scBimULPkPpA557prMG47xCHQfK",
 
   #"LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
-  "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
+  #"CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
   #"CpKdPv3L8HGcgzbBNY9tDH3CNB7DavXma86VfEfSVfEg",
-  #"AxiomfHaWDemCFBLBayqnEnNwE6b7B2Qz3UmzMpgbMG6",
+  "AxiomfHaWDemCFBLBayqnEnNwE6b7B2Qz3UmzMpgbMG6",
 ]
 
 mintsMonitor = [

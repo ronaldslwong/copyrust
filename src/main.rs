@@ -56,6 +56,9 @@ async fn start_stats_monitoring() {
         // Get map stats
         let (map_size, map_entries) = crate::grpc::arpc_worker::get_map_stats();
         
+        // Get deduplication stats
+        let dedup_size = crate::grpc::arpc_parser::get_dedup_stats();
+        
         // Get memory usage
         let memory_info = crate::utils::get_memory_usage();
         
@@ -87,6 +90,11 @@ async fn start_stats_monitoring() {
             map_entries.iter().map(|(tx_type, age)| format!("{}:{:.2?}", tx_type, age)).collect::<Vec<_>>().join(", ")
         );
         
+        println!("[{}] DEDUP: Size={}", 
+            now.format("%Y-%m-%d %H:%M:%S%.3f"),
+            dedup_size
+        );
+        
         if let Some((rss, vm_size)) = memory_info {
             println!("[{}] MEMORY: RSS={}, Virtual={}", 
                 now.format("%Y-%m-%d %H:%M:%S%.3f"),
@@ -115,6 +123,53 @@ async fn start_stats_monitoring() {
             crate::grpc::arpc_worker::debug_and_cleanup();
         }
         
+        // Enhanced memory leak detection using RSS
+        if let Some((rss, _vm_size)) = memory_info {
+            // Simple memory leak detection: if RSS grows by more than 50MB in 5 minutes
+            static mut LAST_RSS: Option<usize> = None;
+            static mut LAST_CHECK_TIME: Option<u64> = None;
+            
+            unsafe {
+                let current_time = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                
+                if let Some(last_rss) = LAST_RSS {
+                    if let Some(last_time) = LAST_CHECK_TIME {
+                        let time_diff = current_time - last_time;
+                        if time_diff >= 300 { // 5 minutes
+                            let rss_diff = if rss > last_rss { rss - last_rss } else { 0 };
+                            if rss_diff > 50 * 1024 * 1024 { // 50MB
+                                println!("[{}] WARNING: Potential memory leak detected! RSS increased by {} MB in {} seconds", 
+                                    now.format("%Y-%m-%d %H:%M:%S%.3f"),
+                                    rss_diff / (1024 * 1024),
+                                    time_diff as usize
+                                );
+                                
+                                // Trigger emergency cleanup
+                                println!("[{}] WARNING: Triggering emergency cleanup...", 
+                                    now.format("%Y-%m-%d %H:%M:%S%.3f"));
+                                
+                                // Force cleanup of deduplication map
+                                crate::grpc::arpc_parser::cleanup_old_signatures();
+                                
+                                // Force cleanup of monitoring data
+                                crate::grpc::monitoring_client::emergency_cleanup_monitoring_data();
+                                
+                                // Force cleanup of transaction map
+                                crate::grpc::arpc_worker::debug_and_cleanup();
+                            }
+                            LAST_CHECK_TIME = Some(current_time);
+                        }
+                    } else {
+                        LAST_CHECK_TIME = Some(current_time);
+                    }
+                }
+                LAST_RSS = Some(rss);
+            }
+        }
+        
         // Check for processing bottlenecks
         if worker_received > 0 && worker_built < worker_received / 2 {
             println!("[{}] WARNING: Worker processing bottleneck detected! Received: {}, Built: {}", 
@@ -138,8 +193,12 @@ async fn main() {
         eprintln!("[Main] Continuing without real-time scheduling...");
     }
     
+    
     let (config, _) = initialize().await;
     let config_arc = Arc::new(config);
+    
+    // Initialize transaction builder optimizations
+    crate::build_tx::tx_builder::init_tx_builder_optimizations();
 
     let mut handles: Vec<JoinHandle<()>> = Vec::new();
 

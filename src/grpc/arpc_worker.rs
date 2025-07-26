@@ -15,7 +15,7 @@ use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use std::sync::Arc;
 use crate::config_load::GLOBAL_CONFIG;
-use crate::build_tx::tx_builder::{default_instruction, build_and_sign_transaction};
+use crate::build_tx::tx_builder::{default_instruction, build_and_sign_transaction, simulate_transaction};
 use crate::init::initialize::GLOBAL_RPC_CLIENT;
 use crate::build_tx::tx_builder::create_instruction;
 use crate::init::wallet_loader::get_wallet_keypair;
@@ -28,6 +28,8 @@ use crate::grpc::programs::raydium_launchpad::raydium_launchpad_build_buy_tx;
 use crate::grpc::programs::axiom::axiom_pump_swap_build_buy_tx;
 use crate::grpc::programs::axiom::axiom_pump_fun_build_buy_tx;
 use crate::grpc::programs::raydium_cpmm::raydium_cpmm_build_buy_tx;
+use crate::build_tx::tx_builder::build_and_sign_transaction_fast;
+use crate::send_tx::jito::create_instruction_jito;
 
 // Add global counters for monitoring worker performance
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -315,6 +317,8 @@ pub fn setup_arpc_crossbeam_worker() {
                     vec![buy_instruction.clone()],
                 );
                 final_buy_instruction = create_instruction_zeroslot(final_buy_instruction,  (config.zeroslot_buy_tip * 1_000_000_000.0) as u64);
+                // final_buy_instruction = create_instruction_jito(final_buy_instruction,  (config.zeroslot_buy_tip * 1_000_000_000.0) as u64);
+
                 let build_time = build_start.elapsed();
                 #[cfg(feature = "verbose_logging")]
                 println!("[BENCH][sig={}] Transaction build time: {:.2?}", sig_str, build_time);
@@ -337,6 +341,58 @@ pub fn setup_arpc_crossbeam_worker() {
                         build_start.elapsed()
                     );
 
+                    // Simulate transaction to get compute units used
+                    let mut simulated_units = None;
+                    if let Some(rpc_client) = GLOBAL_RPC_CLIENT.get() {
+                        match simulate_transaction(rpc_client, tx.as_ref().unwrap()) {
+                            Ok(Some(units)) => {
+                                simulated_units = Some(units);
+                            }
+                            Ok(None) => {
+                                // No units data available, but simulation succeeded
+                            }
+                            Err(e) => {
+                                println!(
+                                    "[{}] - [WORKER] Failed to simulate transaction: {}",
+                                    Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                                    e
+                                );
+                            }
+                        }
+                    }
+
+                    // Use simulated units if available, otherwise use default
+                    let cu_limit = if let Some(units) = simulated_units {
+                        (units as f64 * 1.1) as u32
+                    } else {
+                        config.cu_limit // Use default from config
+                    };
+
+                    final_buy_instruction = create_instruction(
+                        cu_limit,
+                        config.cu_price0_slot,
+                        mint,
+                        vec![buy_instruction.clone()],
+                    );
+                    final_buy_instruction = create_instruction_zeroslot(final_buy_instruction,  (config.zeroslot_buy_tip * 1_000_000_000.0) as u64);
+                    // final_buy_instruction = create_instruction_jito(final_buy_instruction,  (config.zeroslot_buy_tip * 1_000_000_000.0) as u64);
+
+                    let build_time = build_start.elapsed();
+                    #[cfg(feature = "verbose_logging")]
+                    println!("[BENCH][sig={}] Transaction build time: {:.2?}", sig_str, build_time);
+
+                    let sign_start = Instant::now();
+                    let tx = build_and_sign_transaction_fast(
+                        rpc,
+                        &final_buy_instruction,
+                        get_wallet_keypair(),
+                    )
+                    .ok();
+                    let sign_time = sign_start.elapsed();
+                    #[cfg(feature = "verbose_logging")]
+                    println!("[BENCH][sig={}] Transaction sign time: {:.2?}", sig_str, sign_time);
+                    
+                    
                     tx_with_pubkey.tx = tx.unwrap();
                     tx_with_pubkey.mint = mint;
                     tx_with_pubkey.token_amount = target_token_buy;

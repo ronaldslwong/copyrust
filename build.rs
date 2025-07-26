@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
 
         //jito
-        tonic_build::configure()
+    tonic_build::configure()
         .build_server(false)
         .out_dir(std::env::var("OUT_DIR").unwrap())
         .compile_protos(

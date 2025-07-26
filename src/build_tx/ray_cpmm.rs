@@ -402,7 +402,7 @@ pub fn build_ray_cpmm_swap_instruction(
     if direction == SwapDirection::Buy {
         metas = vec![
             AccountMeta::new(accounts.wallet, true),
-            AccountMeta::new(accounts.authority, false),
+            AccountMeta::new_readonly(accounts.authority, false),
             AccountMeta::new_readonly(accounts.amm_config, false),
             AccountMeta::new(accounts.pool_state, false),
             AccountMeta::new(accounts.quote_ata, false),
@@ -418,7 +418,7 @@ pub fn build_ray_cpmm_swap_instruction(
     } else {
         metas = vec![
             AccountMeta::new(accounts.wallet, true),
-            AccountMeta::new(accounts.authority, false),
+            AccountMeta::new_readonly(accounts.authority, false),
             AccountMeta::new_readonly(accounts.amm_config, false),
             AccountMeta::new(accounts.pool_state, false),
             AccountMeta::new(accounts.base_ata, false),
@@ -510,14 +510,14 @@ pub fn get_instruction_accounts_migrate(
     RayCpmmSwapAccounts {
         wallet: get_wallet_keypair().pubkey(),
         authority: RAYDIUM_CPMM_AUTHORITY,
-        amm_config: get_account(&account_keys, &accounts, 10),
-        pool_state: get_account(&account_keys, &accounts, 17),
+        amm_config: RAYDIUM_CPMM_AMM_CONFIG,
+        pool_state: get_account(&account_keys, &accounts, 5),
         quote_ata: quote_ata,
         base_ata: base_ata,
-        token_0_vault: get_account(&account_keys, &accounts, 20),
-        token_1_vault: get_account(&account_keys, &accounts, 19),
-        token_0_program: get_account(&account_keys, &accounts, 23),
-        token_1_program: get_account(&account_keys, &accounts, 22),
+        token_0_vault: get_account(&account_keys, &accounts, 9),
+        token_1_vault: get_account(&account_keys, &accounts, 8),
+        token_0_program: spl_token::ID,
+        token_1_program: spl_token::ID,
         token_0_mint: WSOL,
         token_1_mint: mint,
         observation_key: get_account(&account_keys, &accounts, 12),
