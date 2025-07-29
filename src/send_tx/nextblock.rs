@@ -1,4 +1,4 @@
-use crate::init::wallet_loader::get_wallet_keypair;
+use crate::init::wallet_loader::{get_wallet_keypair, get_nonce_account};
 use base64::{engine::general_purpose, Engine as _};
 use once_cell::sync::OnceCell;
 use solana_sdk::instruction::Instruction;
@@ -13,6 +13,8 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, ClientTlsConfig};
 use tonic::{Request, Status};
 use solana_sdk::signer::keypair::Keypair;
+use rand::Rng;
+use solana_sdk::compute_budget;
 
 // You must have the generated gRPC client from NextBlock proto
 // Example: use nextblock_proto::api_client::ApiClient;
@@ -115,17 +117,29 @@ pub async fn send_tx_nextblock(
 pub fn create_instruction_nextblock(
     instructions: Vec<Instruction>,
     tip: u64,
+    cu_price: u64,
+    nonce_account: &Pubkey,
 ) -> Vec<Instruction> {
 
+    let mut rng = rand::thread_rng();
+    let random_addition: u64 = rng.gen_range(1..=100);
+    let adjusted_cu_price = cu_price + random_addition;
     let keypair: &'static Keypair = get_wallet_keypair();
+
+    let price_ix = compute_budget::ComputeBudgetInstruction::set_compute_unit_price(adjusted_cu_price);
 
     let tip_ix = nextblock_tip(
         "NEXTbLoCkB51HpLBLojQfpyVAMorm3zzKg7w9NFdqid",
         tip,
         &keypair.pubkey(),
     );
+    // Create advance nonce instruction using the provided nonce account
+    let advance_nonce_ix = system_instruction::advance_nonce_account(
+        nonce_account,
+        &keypair.pubkey(),
+    );
 
-    let mut result = vec![tip_ix];
+    let mut result = vec![advance_nonce_ix, tip_ix, price_ix];
     result.extend(instructions);
     result
 }

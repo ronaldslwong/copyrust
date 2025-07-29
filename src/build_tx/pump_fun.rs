@@ -260,8 +260,7 @@ pub fn get_instruction_accounts(
     let user_ata = spl_associated_token_account::get_associated_token_address(&user, &mint);
     let bonding_curve_ata = spl_associated_token_account::get_associated_token_address(&bonding_curve_pda, &mint);
     
-    // Get creator from bonding curve data (you might need to fetch this)
-    // For now, using a placeholder - you'll need to implement this based on your needs
+    // Get creator from bonding curve data (you might need to implement this based on your needs)
     // let creator = get_account(&account_keys, &accounts, 5); // Adjust index as needed
     // let creator_fee_vault = get_creator_fee_vault(&creator);
     

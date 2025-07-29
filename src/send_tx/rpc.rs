@@ -9,11 +9,12 @@ use solana_program::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::compute_budget;
 use crate::config_load::{Config};
-use crate::init::wallet_loader::get_wallet_keypair;
+use crate::init::wallet_loader::{get_wallet_keypair, get_nonce_account};
 use crate::utils::ata::create_ata;
 use solana_sdk::signature::Signer;
 use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_sdk::hash::Hash;
+use solana_program::system_instruction;
 
 
 // Global slice of RPC clients
@@ -105,15 +106,22 @@ pub fn create_instruction_rpc(
     cu_price: u64,
     mint: Pubkey,
     instructions: Vec<Instruction>,
+    tip_amount: u64,
+    nonce_account: &Pubkey,
 ) -> Vec<Instruction> {
-    let limit_ix = compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu_limit);
-    let price_ix = compute_budget::ComputeBudgetInstruction::set_compute_unit_price(cu_price);
+    // let limit_ix = compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu_limit);
+    let cu_price_tip = ((tip_amount / cu_limit as u64) as f64 * 1_000_000.0) as u64;
+    let price_ix = compute_budget::ComputeBudgetInstruction::set_compute_unit_price(cu_price_tip);
 
     let keypair = get_wallet_keypair();
 
     let ata_ix = create_ata(&keypair, &keypair.pubkey(), &mint);
 
-    let mut result = vec![limit_ix, price_ix, ata_ix];
+    let advance_nonce_ix = system_instruction::advance_nonce_account(
+        nonce_account,
+        &keypair.pubkey(),
+    );
+    let mut result = vec![advance_nonce_ix, price_ix];
     result.extend(instructions);
     result
 }

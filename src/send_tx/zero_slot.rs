@@ -10,11 +10,14 @@ use solana_sdk::{
     signature::{Keypair, Signer},
     system_instruction,
     transaction::Transaction,
+    system_program,
 };
 use solana_sdk::instruction::Instruction;
 use crate::config_load::GLOBAL_CONFIG;
-use crate::init::wallet_loader::get_wallet_keypair;
+use crate::init::wallet_loader::{get_wallet_keypair, get_nonce_account};
 use once_cell::sync::Lazy;
+use rand::Rng;
+use solana_sdk::compute_budget;
 
 // List of ZeroSlot tip accounts
 static ZEROSLOT_TIP_ACCOUNTS: &[&str] = &[
@@ -116,16 +119,29 @@ pub fn zeroslot_tip(tip: u64, from_pubkey: &Pubkey) -> Instruction {
 pub fn create_instruction_zeroslot(
     instructions: Vec<Instruction>,
     tip: u64,
+    cu_price: u64,
+    nonce_account: &Pubkey,
 ) -> Vec<Instruction> {
-
+    // Add a random number between 1-100 to the compute unit price
+    let mut rng = rand::thread_rng();
+    let random_addition: u64 = rng.gen_range(1..=100);
+    let adjusted_cu_price = cu_price + random_addition;
     let keypair: &'static Keypair = get_wallet_keypair();
+
+    let price_ix = compute_budget::ComputeBudgetInstruction::set_compute_unit_price(adjusted_cu_price);
 
     let tip_ix = zeroslot_tip(
         tip,
         &keypair.pubkey(),
     );
 
-    let mut result = vec![tip_ix];
+    // Create advance nonce instruction using the provided nonce account
+    let advance_nonce_ix = system_instruction::advance_nonce_account(
+        nonce_account,
+        &keypair.pubkey(), // Use main wallet as authority
+    );
+
+    let mut result = vec![advance_nonce_ix, tip_ix, price_ix];
     result.extend(instructions);
     result
 }

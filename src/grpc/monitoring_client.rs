@@ -69,7 +69,7 @@ pub fn purge_old_monitoring_data() {
     use std::time::Duration;
     
     loop {
-        std::thread::sleep(Duration::from_secs(30)); // Check every 30 seconds
+        std::thread::sleep(Duration::from_secs(15)); // Check every 15 seconds (was 30)
         
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -78,14 +78,15 @@ pub fn purge_old_monitoring_data() {
         
         let mut to_remove = Vec::new();
         
-        // Collect keys of entries to remove (older than 120 seconds)
+        // More aggressive cleanup - remove data older than 60 seconds (was 120)
         for entry in GLOBAL_MONITORING_DATA.iter() {
-            if current_time - entry.value().timestamp > 120 {
+            if current_time - entry.value().timestamp > 60 { // Reduced from 120 to 60 seconds
                 to_remove.push(*entry.key());
             }
         }
         
         // Remove old entries
+        let removed_count = to_remove.len();
         for key in to_remove {
             if let Some((_, data)) = GLOBAL_MONITORING_DATA.remove(&key) {
                 let now = Utc::now();
@@ -97,13 +98,24 @@ pub fn purge_old_monitoring_data() {
             }
         }
         
-        // Log map size periodically
-        if GLOBAL_MONITORING_DATA.len() > 0 {
+        // Log map size periodically or if large cleanup occurred
+        if GLOBAL_MONITORING_DATA.len() > 0 || removed_count > 10 {
             let now = Utc::now();
-            println!("[{}] - [Monitoring] GLOBAL_MONITORING_DATA size: {}", 
+            println!("[{}] - [Monitoring] GLOBAL_MONITORING_DATA size: {} (removed {} entries)", 
                 now.format("%Y-%m-%d %H:%M:%S%.3f"),
+                GLOBAL_MONITORING_DATA.len(),
+                removed_count
+            );
+        }
+        
+        // Emergency cleanup if map is too large
+        if GLOBAL_MONITORING_DATA.len() > 500 {
+            let now = Utc::now();
+            println!("[{}] - [Monitoring] EMERGENCY: Map too large ({}), clearing all entries", 
+                now.format("%Y-%m-%d %H:%M:%S%.3f"), 
                 GLOBAL_MONITORING_DATA.len()
             );
+            GLOBAL_MONITORING_DATA.clear();
         }
     }
 }
@@ -117,9 +129,9 @@ pub fn emergency_cleanup_monitoring_data() {
     
     let mut to_remove = Vec::new();
     
-    // Remove data older than 60 seconds (more aggressive)
+    // Remove data older than 30 seconds (more aggressive than normal 60 seconds)
     for entry in GLOBAL_MONITORING_DATA.iter() {
-        if current_time - entry.value().timestamp > 60 { // 60 seconds
+        if current_time - entry.value().timestamp > 30 { // 30 seconds
             to_remove.push(entry.key().clone());
         }
     }
@@ -137,6 +149,16 @@ pub fn emergency_cleanup_monitoring_data() {
             removed_count, 
             GLOBAL_MONITORING_DATA.len()
         );
+    }
+    
+    // If still too large, clear everything
+    if GLOBAL_MONITORING_DATA.len() > 200 {
+        let now = Utc::now();
+        println!("[{}] - [MONITORING] EMERGENCY: Still too large ({}), clearing all entries", 
+            now.format("%Y-%m-%d %H:%M:%S%.3f"), 
+            GLOBAL_MONITORING_DATA.len()
+        );
+        GLOBAL_MONITORING_DATA.clear();
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "copy_rust"
-version = "1.1.1"
+version = "2.0.0"
 edition = "2021"
 
 [features]
@@ -53,6 +53,7 @@ ed25519-zebra = "4.0"
 thread-priority = "0.13"
 libc = "0.2"
 rand = "0.8"
+rayon = "1.8"
 
 [build-dependencies]
 tonic-build = "0.13.1"
@@ -65,3 +66,5 @@ linker = "x86_64-unknown-linux-gnu-gcc"
 git = "https://github.com/MeteoraAg/dynamic-bonding-curve"
 branch = "main" # or use specific commit hash for stability
 package = "dynamic-bonding-curve-sdk"
+
+

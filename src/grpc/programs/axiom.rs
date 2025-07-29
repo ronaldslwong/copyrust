@@ -108,7 +108,7 @@ pub fn axiom_pump_fun_build_buy_tx(
 
     (
         buy_instruction,
-        pump_fun_accounts.mint,
+        get_account(account_keys, accounts, 2),
         limit_quote_amount,
         pump_fun_accounts,
     )

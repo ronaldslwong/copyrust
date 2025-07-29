@@ -33,6 +33,12 @@ zeroslot_buy_tip = 0.001
 zeroslot_sell_tip = 0.001
 cuPrice0Slot = 100_000
 
+blockrazor_url = "http://frankfurt.solana-grpc.blockrazor.xyz:80"
+blockrazor_api = "c1PkDinj42N2vdWTMktpAJQJvuHMKkEWlonzdcpn4nD1TtCT9JYiTo4pwdGg87glH6jPzrEXpNoRUbDkArgYDCdMMBepLxHm"
+blockrazor_cu_price = 100_000
+blockrazor_buy_tip = 0.001
+blockrazor_sell_tip = 0.001
+
 jitoUrl = "https://ny.mainnet.block-engine.jito.wtf:443"
 jito_buy_tip = 0.001
 jito_sell_tip = 0.001
@@ -40,7 +46,7 @@ cuPriceJito = 100_000
 
 
 solFilter = 0.000100
-cuPrice = 1_000_000
+rpcCuPrice = 10_000_000
 
 accountsMonitor = [
   #"BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW", #photon

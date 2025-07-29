@@ -28,6 +28,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ],
         )?;
 
+    //blockrazor
+    tonic_build::configure()
+        .build_server(false)
+        .out_dir(std::env::var("OUT_DIR").unwrap())
+        .compile_protos(
+            &["src/proto/blockrazor.proto"],
+            &[
+                "src/proto",
+            ],
+        )?;
+
         //jito
     tonic_build::configure()
         .build_server(false)

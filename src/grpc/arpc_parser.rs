@@ -41,9 +41,9 @@ pub fn cleanup_old_signatures() {
     
     let mut to_remove = Vec::new();
     
-    // Collect signatures older than 10 seconds
+    // More aggressive cleanup - remove signatures older than 5 seconds (was 10)
     for entry in PROCESSED_SIGNATURES.iter() {
-        if current_time - entry.value() > 10 {
+        if current_time - entry.value() > 5 { // Reduced from 10 to 5 seconds
             to_remove.push(entry.key().clone());
         }
     }
@@ -54,14 +54,24 @@ pub fn cleanup_old_signatures() {
         PROCESSED_SIGNATURES.remove(&sig);
     }
     
-    // Log cleanup if we removed many entries
-    if removed_count > 100 {
+    // Log cleanup if we removed many entries or if map is getting large
+    if removed_count > 50 || PROCESSED_SIGNATURES.len() > 1000 {
         let now = chrono::Utc::now();
         println!("[{}] - [DEDUP] Cleaned up {} old signatures, remaining: {}", 
             now.format("%Y-%m-%d %H:%M:%S%.3f"), 
             removed_count, 
             PROCESSED_SIGNATURES.len()
         );
+    }
+    
+    // Emergency cleanup if map is too large
+    if PROCESSED_SIGNATURES.len() > 2000 {
+        let now = chrono::Utc::now();
+        println!("[{}] - [DEDUP] EMERGENCY: Map too large ({}), clearing all entries", 
+            now.format("%Y-%m-%d %H:%M:%S%.3f"), 
+            PROCESSED_SIGNATURES.len()
+        );
+        PROCESSED_SIGNATURES.clear();
     }
 }
 
@@ -72,14 +82,14 @@ fn is_signature_processed(sig: &str) -> bool {
         .unwrap()
         .as_secs();
     
-    // Clean up old signatures periodically
-    if current_time % 5 == 0 { // Every 5 seconds
+    // Clean up old signatures more frequently (every 2 seconds instead of 5)
+    if current_time % 2 == 0 { // Every 2 seconds (was 5)
         cleanup_old_signatures();
     }
     
-    // Check if signature exists and is recent (within last 5 seconds)
+    // Check if signature exists and is recent (within last 3 seconds instead of 5)
     if let Some(timestamp) = PROCESSED_SIGNATURES.get(sig) {
-        if current_time - *timestamp < 5 {
+        if current_time - *timestamp < 3 { // Reduced from 5 to 3 seconds
             return true; // Recently processed
         }
     }
@@ -107,6 +117,8 @@ pub use crate::grpc::arpc_worker::{ParsedArpcTrade, setup_arpc_crossbeam_worker,
 
 pub async fn process_arpc_msg(resp: &SubscribeResponse, _config: &Config) -> Option<ParsedTrade> {
     
+    let total_start = std::time::Instant::now();
+    
     let tx = resp.transaction.as_ref()?;
     let slot = tx.slot;
     let account_keys = Arc::new(tx.account_keys.clone());
@@ -114,20 +126,33 @@ pub async fn process_arpc_msg(resp: &SubscribeResponse, _config: &Config) -> Opt
     let detection_time = std::time::Instant::now();
     let tx_instructions = Arc::new(tx.instructions.clone());
 
+    // Most aggressive optimization - extract signature directly without Arc wrapping
     let sig_bytes = tx.signatures.get(0).map(|s| Arc::new(s.clone()));
     
-    // Extract signature string for later use
-    let sig_string = sig_bytes.as_ref().map(|s| bs58::encode(s.as_slice()).into_string()).unwrap_or_default();
+    // Extract signature string efficiently
+    let sig_string: String = sig_bytes.as_ref().map(|s| bs58::encode(s.as_slice()).into_string()).unwrap_or_default();
+    
+    let sig_extraction_time = detection_time.elapsed();
+    println!("[PROFILE][{}] Sig extraction: {:.2?}", sig_string, sig_extraction_time);
     
     // DEDUPLICATION: Check if we've already processed this signature
+    let dedup_start = std::time::Instant::now();
     if is_signature_processed(&sig_string) {
         // Skip processing - already handled
+        let dedup_time = dedup_start.elapsed();
+        println!("[PROFILE][{}] Dedup check (skipped): {:.2?}", sig_string, dedup_time);
         return None;
     }
+    let dedup_time = dedup_start.elapsed();
+    println!("[PROFILE][{}] Dedup check (passed): {:.2?}", sig_string, dedup_time);
     
     if let Some(ref sig_bytes) = sig_bytes {
         log_event(EventType::ArpcDetectionProcessing, sig_bytes, detection_time, None);
     }
+    
+    let log_event_time = detection_time.elapsed();
+    println!("[PROFILE][{}] Log event: {:.2?}", sig_string, log_event_time);
+    
     let parsed = ParsedArpcTrade {
         sig_bytes,
         slot,
@@ -136,9 +161,17 @@ pub async fn process_arpc_msg(resp: &SubscribeResponse, _config: &Config) -> Opt
         account_keys,
         // ... add more fields if needed ...
     };
+    
+    let struct_creation_time = detection_time.elapsed();
+    println!("[PROFILE][{}] Struct creation: {:.2?}", sig_string, struct_creation_time);
+    
+    let send_start = std::time::Instant::now();
     send_parsed_arpc_trade(parsed);
+    let send_time = send_start.elapsed();
+    println!("[PROFILE][{}] Send to worker: {:.2?}", sig_string, send_time);
 
     // Check if this message contains any of the target program IDs
+    let program_check_start = std::time::Instant::now();
     let mut has_target_program = false;
     for account_key in &tx.account_keys {
         if account_key == &*crate::constants::raydium_launchpad::RAYDIUM_LAUNCHPAD_PROGRAM_ID_BYTES ||
@@ -149,6 +182,11 @@ pub async fn process_arpc_msg(resp: &SubscribeResponse, _config: &Config) -> Opt
             break;
         }
     }
+    let program_check_time = program_check_start.elapsed();
+    println!("[PROFILE][{}] Program ID check: {:.2?}", sig_string, program_check_time);
+
+    let total_time = total_start.elapsed();
+    println!("[PROFILE][{}] TOTAL parser time: {:.2?}", sig_string, total_time);
 
     // Return a dummy ParsedTrade if we have target programs (this will increment the processed counter)
     if has_target_program {

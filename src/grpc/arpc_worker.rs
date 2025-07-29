@@ -30,6 +30,7 @@ use crate::grpc::programs::axiom::axiom_pump_fun_build_buy_tx;
 use crate::grpc::programs::raydium_cpmm::raydium_cpmm_build_buy_tx;
 use crate::build_tx::tx_builder::build_and_sign_transaction_fast;
 use crate::send_tx::jito::create_instruction_jito;
+use std::collections::HashMap;
 
 // Add global counters for monitoring worker performance
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -42,6 +43,37 @@ static WORKER_ERRORS: AtomicUsize = AtomicUsize::new(0);
 // Global performance counters
 static STORAGE_OPERATIONS: AtomicUsize = AtomicUsize::new(0);
 static STORAGE_TIME_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+// HIGH PRIORITY OPTIMIZATION: Hash-based program ID matching
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgramType {
+    RaydiumLaunchpad,
+    AxiomPumpSwap,
+    AxiomPumpFun,
+    RaydiumCpmm,
+}
+
+// Create a static HashMap for O(1) program ID lookups
+static PROGRAM_ID_MAP: Lazy<HashMap<[u8; 32], ProgramType>> = Lazy::new(|| {
+    let mut map = HashMap::new();
+    map.insert(*RAYDIUM_LAUNCHPAD_PROGRAM_ID_BYTES, ProgramType::RaydiumLaunchpad);
+    map.insert(*AXIOM_PUMP_SWAP_PROGRAM_ID_BYTES, ProgramType::AxiomPumpSwap);
+    map.insert(*AXIOM_PUMP_FUN_PROGRAM_ID_BYTES, ProgramType::AxiomPumpFun);
+    map.insert(*RAYDIUM_CPMM_PROGRAM_ID_BYTES, ProgramType::RaydiumCpmm);
+    map
+});
+
+// HIGH PRIORITY OPTIMIZATION: Fast program ID lookup function
+#[inline]
+pub fn get_program_type(account_inst_bytes: &[u8]) -> Option<ProgramType> {
+    if account_inst_bytes.len() == 32 {
+        let mut key = [0u8; 32];
+        key.copy_from_slice(account_inst_bytes);
+        PROGRAM_ID_MAP.get(&key).copied()
+    } else {
+        None
+    }
+}
 
 pub fn get_storage_stats() -> (usize, u64) {
     (
@@ -72,7 +104,7 @@ pub struct ParsedArpcTrade {
 #[derive(Debug, Clone)]
 
 pub struct TxWithPubkey {
-    pub tx: Transaction,
+    pub vendor_transactions: Vec<(String, Transaction)>, // Store all vendor transactions
     pub bonding_curve: Pubkey,
     pub mint: Pubkey,
     pub token_amount: u64,
@@ -93,7 +125,7 @@ pub struct TxWithPubkey {
 impl TxWithPubkey {
     pub fn default() -> Self {
         TxWithPubkey {
-            tx: Transaction::default(),
+            vendor_transactions: Vec::new(),
             bonding_curve: Pubkey::default(),
             mint: Pubkey::default(),
             token_amount: 0,
@@ -109,6 +141,29 @@ impl TxWithPubkey {
             send_slot: 0,
             created_at: Instant::now(),
         }
+    }
+    
+    /// Get transaction for a specific vendor
+    pub fn get_vendor_transaction(&self, vendor_name: &str) -> Option<&Transaction> {
+        self.vendor_transactions
+            .iter()
+            .find(|(name, _)| name == vendor_name)
+            .map(|(_, tx)| tx)
+    }
+    
+    /// Get all vendor names
+    pub fn get_vendor_names(&self) -> Vec<&String> {
+        self.vendor_transactions.iter().map(|(name, _)| name).collect()
+    }
+    
+    /// Get the first available transaction (for backward compatibility)
+    pub fn get_first_transaction(&self) -> Option<&Transaction> {
+        self.vendor_transactions.first().map(|(_, tx)| tx)
+    }
+    
+    /// Check if a specific vendor transaction exists
+    pub fn has_vendor(&self, vendor_name: &str) -> bool {
+        self.vendor_transactions.iter().any(|(name, _)| name == vendor_name)
     }
 }
 
@@ -129,9 +184,10 @@ fn purge_old_entries_task() {
         std::thread::sleep(Duration::from_secs(5)); // Check every 5 seconds
         
         let now = Instant::now();
-        let purge_threshold = Duration::from_secs(10); // 10 seconds
+        let purge_threshold = Duration::from_secs(8); // 8 seconds (was 10)
         
         let mut to_remove = Vec::new();
+        let mut removed_count = 0;
         
         // Collect keys of entries to remove
         for entry in GLOBAL_TX_MAP.iter() {
@@ -143,6 +199,7 @@ fn purge_old_entries_task() {
         // Remove old entries
         for key in to_remove {
             if let Some((_, tx_with_pubkey)) = GLOBAL_TX_MAP.remove(&key) {
+                removed_count += 1;
                 println!("[Purge] Removed old entry for tx_type: {} (age: {:.2?})", 
                     tx_with_pubkey.tx_type, 
                     now.duration_since(tx_with_pubkey.created_at)
@@ -150,9 +207,19 @@ fn purge_old_entries_task() {
             }
         }
         
-        // Log map size periodically
-        if GLOBAL_TX_MAP.len() > 0 {
-            println!("[Purge] GLOBAL_TX_MAP size: {}", GLOBAL_TX_MAP.len());
+        // Log map size periodically or if large cleanup occurred
+        if GLOBAL_TX_MAP.len() > 0 || removed_count > 0 {
+            println!("[Purge] GLOBAL_TX_MAP size: {} (removed {} entries)", GLOBAL_TX_MAP.len(), removed_count);
+        }
+        
+        // Emergency cleanup if map is too large
+        if GLOBAL_TX_MAP.len() > 1000 {
+            let now = chrono::Utc::now();
+            println!("[{}] - [PURGE] EMERGENCY: Map too large ({}), clearing all entries", 
+                now.format("%Y-%m-%d %H:%M:%S%.3f"), 
+                GLOBAL_TX_MAP.len()
+            );
+            GLOBAL_TX_MAP.clear();
         }
     }
 }
@@ -192,7 +259,7 @@ pub fn setup_arpc_crossbeam_worker() {
         while let Ok(parsed) = rx_clone.recv() {
             WORKER_MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
             
-            let loop_start = Instant::now();
+            let worker_total_start = Instant::now();
             let sig_str = parsed.sig_bytes
                 .as_ref()
                 .map(|s| bs58::encode(s.as_slice()).into_string())
@@ -217,90 +284,149 @@ pub fn setup_arpc_crossbeam_worker() {
             let mut raydium_cpmm_accounts = RayCpmmSwapAccounts::default();
 
             let parse_start = Instant::now();
-            // --- INSTRUCTION MATCHING ---
+            // --- OPTIMIZED INSTRUCTION MATCHING ---
+            let mut instruction_count = 0;
             for instr in parsed.tx_instructions.iter() {
+                instruction_count += 1;
+                let instr_start = Instant::now();
+                
                 let program_id_index = instr.program_id_index as usize;
                 let data = &instr.data;
 
+                let account_lookup_start = Instant::now();
                 if let Some(account_inst_bytes) = parsed.account_keys.get(program_id_index) {
-                    if account_inst_bytes == &*RAYDIUM_LAUNCHPAD_PROGRAM_ID_BYTES
-                        && data.len() > 8
-                        && &data[0..8] == [250, 234, 13, 123, 213, 156, 19, 236]
-                    {
-                        (buy_instruction, mint, target_token_buy, ray_launch_accounts) = raydium_launchpad_build_buy_tx(
-                            &parsed.account_keys,
-                            &instr.accounts,
-                            parsed.sig_bytes.clone(),
-                            parsed.detection_time,
-                            data,
-                            buy_sol_lamports,
-                            config.buy_slippage_bps,
-                        );
-                        send_tx = true;
-                        let mut tx = TxWithPubkey::default();
-                        tx.tx_type = "ray_launch".to_string();
-                        tx.ray_launch_accounts = Some(ray_launch_accounts.clone());
-                        tx_with_pubkey = Some(tx);
-                        break;
+                    let account_lookup_time = account_lookup_start.elapsed();
+                    #[cfg(feature = "verbose_logging")]
+                    if instruction_count <= 3 { // Only log first few instructions to avoid spam
+                        println!("[PROFILE][{}] Instruction {} - Account lookup: {:.2?}", sig_str, instruction_count, account_lookup_time);
                     }
-
-                    if account_inst_bytes == &*AXIOM_PUMP_SWAP_PROGRAM_ID_BYTES {
-                        (buy_instruction, mint, target_token_buy, pump_swap_accounts) = axiom_pump_swap_build_buy_tx(
-                            &parsed.account_keys,
-                            &instr.accounts,
-                            parsed.sig_bytes.clone(),
-                            parsed.detection_time,
-                            buy_sol_lamports,
-                            config.buy_slippage_bps,
-                        );
-                        send_tx = true;
-                        let mut tx = TxWithPubkey::default();
-                        tx.tx_type = "pump_swap".to_string();
-                        tx.pump_swap_accounts = Some(pump_swap_accounts.clone());
-                        tx_with_pubkey = Some(tx);
-                        break;
-                    }
-
-                    if account_inst_bytes == &*AXIOM_PUMP_FUN_PROGRAM_ID_BYTES {
-                        (buy_instruction, mint, target_token_buy, pump_fun_accounts) = axiom_pump_fun_build_buy_tx(
-                            &parsed.account_keys,
-                            &instr.accounts,
-                            parsed.sig_bytes.clone(),
-                            parsed.detection_time,
-                            buy_sol_lamports,
-                            config.buy_slippage_bps,
-                        );
-                        send_tx = true;
-                        let mut tx = TxWithPubkey::default();
-                        tx.tx_type = "pumpfun".to_string();
-                        tx.pump_fun_accounts = Some(pump_fun_accounts.clone());
-                        tx_with_pubkey = Some(tx);
-                        break;
-                    }
-                    if account_inst_bytes == &*RAYDIUM_CPMM_PROGRAM_ID_BYTES {
-                        (buy_instruction, mint, target_token_buy, raydium_cpmm_accounts) = raydium_cpmm_build_buy_tx(
-                            &parsed.account_keys,
-                            &instr.accounts,
-                            parsed.sig_bytes.clone(),
-                            parsed.detection_time,
-                            buy_sol_lamports,
-                            config.buy_slippage_bps,
-                        );
-                        if mint != Pubkey::default() { //buy tx
-                            send_tx = true;
-                            let mut tx = TxWithPubkey::default();
-                            tx.tx_type = "ray_cpmm".to_string();
-                            tx.raydium_cpmm_accounts = Some(raydium_cpmm_accounts.clone());
-                            tx_with_pubkey = Some(tx);
-                            break;
+                    
+                    // HIGH PRIORITY OPTIMIZATION: Hash-based program ID matching
+                    let program_check_start = Instant::now();
+                    if let Some(program_type) = get_program_type(account_inst_bytes) {
+                        let program_check_time = program_check_start.elapsed();
+                        #[cfg(feature = "verbose_logging")]
+                        println!("[PROFILE][{}] Instruction {} - Program ID check: {:.2?}", sig_str, instruction_count, program_check_time);
+                        
+                        // Process based on program type with early exit
+                        match program_type {
+                            ProgramType::RaydiumLaunchpad => {
+                                // Check discriminator for Raydium
+                                if data.len() > 8 && &data[0..8] == [250, 234, 13, 123, 213, 156, 19, 236] {
+                                    let raydium_start = Instant::now();
+                                    (buy_instruction, mint, target_token_buy, ray_launch_accounts) = raydium_launchpad_build_buy_tx(
+                                        &parsed.account_keys,
+                                        &instr.accounts,
+                                        parsed.sig_bytes.clone(),
+                                        parsed.detection_time,
+                                        data,
+                                        buy_sol_lamports,
+                                        config.buy_slippage_bps,
+                                    );
+                                    let raydium_time = raydium_start.elapsed();
+                                    #[cfg(feature = "verbose_logging")]
+                                    println!("[PROFILE][{}] Raydium launchpad processing: {:.2?}", sig_str, raydium_time);
+                                    send_tx = true;
+                                    let mut tx = TxWithPubkey::default();
+                                    tx.tx_type = "ray_launch".to_string();
+                                    tx.ray_launch_accounts = Some(ray_launch_accounts.clone());
+                                    tx_with_pubkey = Some(tx);
+                                    break; // Early exit after match
+                                }
+                            },
+                            ProgramType::AxiomPumpSwap => {
+                                let axiom_swap_start = Instant::now();
+                                (buy_instruction, mint, target_token_buy, pump_swap_accounts) = axiom_pump_swap_build_buy_tx(
+                                    &parsed.account_keys,
+                                    &instr.accounts,
+                                    parsed.sig_bytes.clone(),
+                                    parsed.detection_time,
+                                    buy_sol_lamports,
+                                    config.buy_slippage_bps,
+                                );
+                                let axiom_swap_time = axiom_swap_start.elapsed();
+                                #[cfg(feature = "verbose_logging")]
+                                println!("[PROFILE][{}] Axiom pump swap processing: {:.2?}", sig_str, axiom_swap_time);
+                                send_tx = true;
+                                let mut tx = TxWithPubkey::default();
+                                tx.tx_type = "pump_swap".to_string();
+                                tx.pump_swap_accounts = Some(pump_swap_accounts.clone());
+                                tx_with_pubkey = Some(tx);
+                                break; // Early exit after match
+                            },
+                            ProgramType::AxiomPumpFun => {
+                                let axiom_fun_start = Instant::now();
+                                (buy_instruction, mint, target_token_buy, pump_fun_accounts) = axiom_pump_fun_build_buy_tx(
+                                    &parsed.account_keys,
+                                    &instr.accounts,
+                                    parsed.sig_bytes.clone(),
+                                    parsed.detection_time,
+                                    buy_sol_lamports,
+                                    config.buy_slippage_bps,
+                                );
+                                let axiom_fun_time = axiom_fun_start.elapsed();
+                                #[cfg(feature = "verbose_logging")]
+                                println!("[PROFILE][{}] Axiom pump fun processing: {:.2?}", sig_str, axiom_fun_time);
+                                send_tx = true;
+                                let mut tx = TxWithPubkey::default();
+                                tx.tx_type = "pumpfun".to_string();
+                                tx.pump_fun_accounts = Some(pump_fun_accounts.clone());
+                                tx_with_pubkey = Some(tx);
+                                break; // Early exit after match
+                            },
+                            ProgramType::RaydiumCpmm => {
+                                let raydium_cpmm_start = Instant::now();
+                                (buy_instruction, mint, target_token_buy, raydium_cpmm_accounts) = raydium_cpmm_build_buy_tx(
+                                    &parsed.account_keys,
+                                    &instr.accounts,
+                                    parsed.sig_bytes.clone(),
+                                    parsed.detection_time,
+                                    buy_sol_lamports,
+                                    config.buy_slippage_bps,
+                                );
+                                let raydium_cpmm_time = raydium_cpmm_start.elapsed();
+                                #[cfg(feature = "verbose_logging")]
+                                println!("[PROFILE][{}] Raydium CPMM processing: {:.2?}", sig_str, raydium_cpmm_time);
+                                if mint != Pubkey::default() { //buy tx
+                                    send_tx = true;
+                                    let mut tx = TxWithPubkey::default();
+                                    tx.tx_type = "ray_cpmm".to_string();
+                                    tx.raydium_cpmm_accounts = Some(raydium_cpmm_accounts.clone());
+                                    tx_with_pubkey = Some(tx);
+                                    break; // Early exit after match
+                                }
+                            },
                         }
+                    }
+                    #[cfg(feature = "verbose_logging")]
+                    {
+                        let program_check_time = program_check_start.elapsed();
+                        if instruction_count <= 3 {
+                            println!("[PROFILE][{}] Instruction {} - Program ID check (no match): {:.2?}", sig_str, instruction_count, program_check_time);
+                        }
+                    }
+                } else {
+                    #[cfg(feature = "verbose_logging")]
+                    {
+                        let account_lookup_time = account_lookup_start.elapsed();
+                        if instruction_count <= 3 {
+                            println!("[PROFILE][{}] Instruction {} - Account lookup (failed): {:.2?}", sig_str, instruction_count, account_lookup_time);
+                        }
+                    }
+                }
+                
+                #[cfg(feature = "verbose_logging")]
+                {
+                    let instr_time = instr_start.elapsed();
+                    if instruction_count <= 3 {
+                        println!("[PROFILE][{}] Instruction {} - Total processing: {:.2?}", sig_str, instruction_count, instr_time);
                     }
                 }
             }
             
             let match_done = parse_start.elapsed();
             #[cfg(feature = "verbose_logging")]
-            println!("[BENCH][sig={}] Instruction matching total: {:.2?}", sig_str, match_done);
+            println!("[PROFILE][{}] Instruction matching ({}) total: {:.2?}", sig_str, instruction_count, match_done);
             
             if send_tx {
                 WORKER_TRANSACTIONS_BUILT.fetch_add(1, Ordering::Relaxed);
@@ -308,133 +434,122 @@ pub fn setup_arpc_crossbeam_worker() {
                 let build_start = Instant::now();
                 let mut tx_with_pubkey = tx_with_pubkey.take().unwrap();
                 
-                //build buy instruction
-                let rpc = GLOBAL_RPC_CLIENT.get().expect("RPC client not initialized");
-                let mut final_buy_instruction = create_instruction(
-                    config.cu_limit,
-                    config.cu_price0_slot,
+                // Build vendor-specific transactions in parallel
+                let vendor_build_start = Instant::now();
+                match crate::build_tx::tx_builder::build_vendor_specific_transactions_parallel(
+                    buy_instruction,
                     mint,
-                    vec![buy_instruction.clone()],
-                );
-                final_buy_instruction = create_instruction_zeroslot(final_buy_instruction,  (config.zeroslot_buy_tip * 1_000_000_000.0) as u64);
-                // final_buy_instruction = create_instruction_jito(final_buy_instruction,  (config.zeroslot_buy_tip * 1_000_000_000.0) as u64);
+                    target_token_buy,
+                    &sig_str,
+                ) {
+                    Ok(vendor_transactions) => {
+                        let vendor_build_time = vendor_build_start.elapsed();
+                        #[cfg(feature = "verbose_logging")]
+                        println!("[PROFILE][{}] Vendor transaction building: {:.2?}", sig_str, vendor_build_time);
+                        
+                        if !vendor_transactions.is_empty() {
+                            // Store all vendor transactions
+                            tx_with_pubkey.vendor_transactions = vendor_transactions.clone();
+                            tx_with_pubkey.mint = mint;
+                            tx_with_pubkey.token_amount = target_token_buy;
+                            tx_with_pubkey.created_at = Instant::now(); // Set creation time when inserting
 
-                let build_time = build_start.elapsed();
-                #[cfg(feature = "verbose_logging")]
-                println!("[BENCH][sig={}] Transaction build time: {:.2?}", sig_str, build_time);
-
-                let sign_start = Instant::now();
-                let tx = build_and_sign_transaction(
-                    rpc,
-                    &final_buy_instruction,
-                    get_wallet_keypair(),
-                )
-                .ok();
-                let sign_time = sign_start.elapsed();
-                #[cfg(feature = "verbose_logging")]
-                println!("[BENCH][sig={}] Transaction sign time: {:.2?}", sig_str, sign_time);
-                
-                if tx.is_some() {
-                    println!(
-                        "[{}] - [WORKER] SUCCESS - Signed tx, elapsed: {:.2?}",
-                        Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"),
-                        build_start.elapsed()
-                    );
-
-                    // Simulate transaction to get compute units used
-                    let mut simulated_units = None;
-                    if let Some(rpc_client) = GLOBAL_RPC_CLIENT.get() {
-                        match simulate_transaction(rpc_client, tx.as_ref().unwrap()) {
-                            Ok(Some(units)) => {
-                                simulated_units = Some(units);
+                            let insert_start = Instant::now();
+                            
+                            // Create multiple entries in GLOBAL_TX_MAP - one for each vendor transaction signature
+                            // This ensures that when any vendor transaction is detected by GRPC, we can find the corresponding entry
+                            let mut total_inserted = 0;
+                            
+                            // First, insert with the original detected signature (for backward compatibility)
+                            let original_key = parsed.sig_bytes.as_ref().unwrap().as_slice().to_vec();
+                            GLOBAL_TX_MAP.insert(original_key, tx_with_pubkey.clone());
+                            total_inserted += 1;
+                            
+                            // Then, insert with each vendor transaction signature
+                            for (vendor_name, transaction) in &vendor_transactions {
+                                // Extract signature from the transaction
+                                if let Some(signature) = transaction.signatures.first() {
+                                    let vendor_sig_bytes = signature.as_ref().to_vec();
+                                    
+                                    // Create a copy of tx_with_pubkey for this vendor signature
+                                    let mut vendor_tx_with_pubkey = tx_with_pubkey.clone();
+                                    vendor_tx_with_pubkey.send_sig = signature.to_string();
+                                    
+                                    GLOBAL_TX_MAP.insert(vendor_sig_bytes, vendor_tx_with_pubkey);
+                                    total_inserted += 1;
+                                    
+                                    #[cfg(feature = "verbose_logging")]
+                                    println!("[PROFILE][{}] Inserted {} vendor signature: {}", 
+                                        sig_str, vendor_name, signature);
+                                }
                             }
-                            Ok(None) => {
-                                // No units data available, but simulation succeeded
-                            }
-                            Err(e) => {
-                                println!(
-                                    "[{}] - [WORKER] Failed to simulate transaction: {}",
-                                    Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"),
-                                    e
+                            
+                            let insert_time = insert_start.elapsed();
+                            
+                            // Track storage performance
+                            STORAGE_OPERATIONS.fetch_add(total_inserted, Ordering::Relaxed);
+                            STORAGE_TIME_TOTAL.fetch_add(insert_time.as_micros() as u64, Ordering::Relaxed);
+                            
+                            #[cfg(feature = "verbose_logging")]
+                            println!("[PROFILE][{}] Map insert time: {:.2?} (inserted {} entries)", sig_str, insert_time, total_inserted);
+                            
+                            WORKER_TRANSACTIONS_INSERTED.fetch_add(total_inserted, Ordering::Relaxed);
+
+                            #[cfg(feature = "verbose_logging")]
+                            {
+                                let vendor_names: Vec<&String> = vendor_transactions.iter().map(|(v, _)| v).collect();
+                                let now = Utc::now();
+                                println!("[{}] - [WORKER] SUCCESS - {} vendor TXs built and {} entries inserted | detected for slot {} | time to parse: {:.2?} | total built: {}, total inserted: {}", 
+                                    now.format("%Y-%m-%d %H:%M:%S%.3f"), 
+                                    vendor_transactions.len(),
+                                    total_inserted,
+                                    parsed.slot, 
+                                    match_done,
+                                    WORKER_TRANSACTIONS_BUILT.load(Ordering::Relaxed),
+                                    WORKER_TRANSACTIONS_INSERTED.load(Ordering::Relaxed));
+                                
+                                println!("[{}] - [WORKER] INFO - Vendor versions: {:?}", 
+                                    now.format("%Y-%m-%d %H:%M:%S%.3f"),
+                                    vendor_names
                                 );
+                            }
+                            
+                            // TODO: Send all vendor transactions to their respective vendors in parallel
+                            // Each vendor transaction can now be sent to its corresponding vendor
+                        } else {
+                            WORKER_ERRORS.fetch_add(1, Ordering::Relaxed);
+                            #[cfg(feature = "verbose_logging")]
+                            {
+                                let now = Utc::now();
+                                eprintln!("[{}] - [WORKER] ERROR - No vendor transactions built for sig: {} | total errors: {}", 
+                                    now.format("%Y-%m-%d %H:%M:%S%.3f"), 
+                                    sig_str,
+                                    WORKER_ERRORS.load(Ordering::Relaxed));
                             }
                         }
                     }
-
-                    // Use simulated units if available, otherwise use default
-                    let cu_limit = if let Some(units) = simulated_units {
-                        (units as f64 * 1.1) as u32
-                    } else {
-                        config.cu_limit // Use default from config
-                    };
-
-                    final_buy_instruction = create_instruction(
-                        cu_limit,
-                        config.cu_price0_slot,
-                        mint,
-                        vec![buy_instruction.clone()],
-                    );
-                    final_buy_instruction = create_instruction_zeroslot(final_buy_instruction,  (config.zeroslot_buy_tip * 1_000_000_000.0) as u64);
-                    // final_buy_instruction = create_instruction_jito(final_buy_instruction,  (config.zeroslot_buy_tip * 1_000_000_000.0) as u64);
-
-                    let build_time = build_start.elapsed();
-                    #[cfg(feature = "verbose_logging")]
-                    println!("[BENCH][sig={}] Transaction build time: {:.2?}", sig_str, build_time);
-
-                    let sign_start = Instant::now();
-                    let tx = build_and_sign_transaction_fast(
-                        rpc,
-                        &final_buy_instruction,
-                        get_wallet_keypair(),
-                    )
-                    .ok();
-                    let sign_time = sign_start.elapsed();
-                    #[cfg(feature = "verbose_logging")]
-                    println!("[BENCH][sig={}] Transaction sign time: {:.2?}", sig_str, sign_time);
-                    
-                    
-                    tx_with_pubkey.tx = tx.unwrap();
-                    tx_with_pubkey.mint = mint;
-                    tx_with_pubkey.token_amount = target_token_buy;
-                    tx_with_pubkey.created_at = Instant::now(); // Set creation time when inserting
-
-                    let insert_start = Instant::now();
-                    // Use the vector directly to avoid extra copying
-                    let key = parsed.sig_bytes.as_ref().unwrap().as_slice().to_vec();
-                    GLOBAL_TX_MAP.insert(key, tx_with_pubkey);
-                    let insert_time = insert_start.elapsed();
-                    
-                    // Track storage performance
-                    STORAGE_OPERATIONS.fetch_add(1, Ordering::Relaxed);
-                    STORAGE_TIME_TOTAL.fetch_add(insert_time.as_micros() as u64, Ordering::Relaxed);
-                    
-                    #[cfg(feature = "verbose_logging")]
-                    println!("[BENCH][sig={}] Map insert time: {:.2?}", sig_str, insert_time);
-                    
-                    WORKER_TRANSACTIONS_INSERTED.fetch_add(1, Ordering::Relaxed);
-
-                    let now = Utc::now();
-                    println!("[{}] - [WORKER] SUCCESS - TX built and inserted | detected for slot {} | time to build tx: {:.2?} | time to parse: {:.2?}, waiting for grpc confirmation | total built: {}, total inserted: {}", 
-                        now.format("%Y-%m-%d %H:%M:%S%.3f"), 
-                        parsed.slot, 
-                        build_start.elapsed(), 
-                        match_done,
-                        WORKER_TRANSACTIONS_BUILT.load(Ordering::Relaxed),
-                        WORKER_TRANSACTIONS_INSERTED.load(Ordering::Relaxed));
-                } else {
-                    WORKER_ERRORS.fetch_add(1, Ordering::Relaxed);
-                    let now = Utc::now();
-                    eprintln!("[{}] - [WORKER] ERROR - Failed to build transaction for sig: {} | total errors: {}", 
-                        now.format("%Y-%m-%d %H:%M:%S%.3f"), 
-                        sig_str,
-                        WORKER_ERRORS.load(Ordering::Relaxed));
+                    Err(e) => {
+                        WORKER_ERRORS.fetch_add(1, Ordering::Relaxed);
+                        #[cfg(feature = "verbose_logging")]
+                        {
+                            let now = Utc::now();
+                            eprintln!("[{}] - [WORKER] ERROR - Failed to build vendor transactions for sig: {} | Error: {} | total errors: {}", 
+                                now.format("%Y-%m-%d %H:%M:%S%.3f"), 
+                                sig_str,
+                                e,
+                                WORKER_ERRORS.load(Ordering::Relaxed));
+                        }
+                    }
                 }
             } else {
-                let now = Utc::now();
-                println!("[{}] - [WORKER] No transaction to build for sig: {}", 
-                    now.format("%Y-%m-%d %H:%M:%S%.3f"), sig_str);
+                #[cfg(feature = "verbose_logging")]
+                {
+                    let now = Utc::now();
+                    println!("[{}] - [WORKER] No transaction to build for sig: {}", 
+                        now.format("%Y-%m-%d %H:%M:%S%.3f"), sig_str);
+                }
             }
-            let loop_total = loop_start.elapsed();
+            let loop_total = worker_total_start.elapsed();
             #[cfg(feature = "verbose_logging")]
             println!("[BENCH][sig={}] Total loop time: {:.2?}", sig_str, loop_total);
         }
@@ -455,11 +570,16 @@ pub fn manual_purge_old_entries() {
     
     // Use a more efficient approach - collect keys without cloning
     let mut to_remove = Vec::new();
+    let mut type_counts = std::collections::HashMap::new();
     
     for entry in GLOBAL_TX_MAP.iter() {
         if now.duration_since(entry.value().created_at) > purge_threshold {
             // Store the key reference instead of cloning
             to_remove.push(entry.key().clone());
+            
+            // Count by transaction type for reporting
+            let tx_type = entry.value().tx_type.clone();
+            *type_counts.entry(tx_type).or_insert(0) += 1;
         }
     }
     
@@ -469,7 +589,8 @@ pub fn manual_purge_old_entries() {
         GLOBAL_TX_MAP.remove(&key);
     }
     
-    println!("[Manual Purge] Removed {} old entries. Current map size: {}", removed_count, GLOBAL_TX_MAP.len());
+    println!("[Manual Purge] Removed {} old entries (by type: {:?}). Current map size: {}", 
+        removed_count, type_counts, GLOBAL_TX_MAP.len());
 }
 
 /// Get current map size and statistics
@@ -485,6 +606,21 @@ pub fn get_map_stats() -> (usize, Vec<(String, std::time::Duration)>) {
     (GLOBAL_TX_MAP.len(), stats)
 }
 
+/// Get detailed statistics about multiple entries for the same transaction
+pub fn get_multiple_entries_stats() -> (usize, std::collections::HashMap<String, usize>) {
+    let mut signature_counts = std::collections::HashMap::new();
+    
+    for entry in GLOBAL_TX_MAP.iter() {
+        let send_sig = entry.value().send_sig.clone();
+        if !send_sig.is_empty() {
+            *signature_counts.entry(send_sig).or_insert(0) += 1;
+        }
+    }
+    
+    let total_unique_signatures = signature_counts.len();
+    (total_unique_signatures, signature_counts)
+}
+
 /// Comprehensive cleanup and debugging function
 pub fn debug_and_cleanup() {
     let now = Instant::now();
@@ -493,13 +629,20 @@ pub fn debug_and_cleanup() {
     let mut to_remove = Vec::new();
     let mut type_counts = std::collections::HashMap::new();
     let mut age_stats = Vec::new();
+    let mut signature_counts = std::collections::HashMap::new();
     
     for entry in GLOBAL_TX_MAP.iter() {
         let age = now.duration_since(entry.value().created_at);
         let tx_type = entry.value().tx_type.clone();
+        let send_sig = entry.value().send_sig.clone();
         
         // Count by type
         *type_counts.entry(tx_type.clone()).or_insert(0) += 1;
+        
+        // Count by signature (to see if we have multiple entries for same transaction)
+        if !send_sig.is_empty() {
+            *signature_counts.entry(send_sig).or_insert(0) += 1;
+        }
         
         // Collect age statistics
         age_stats.push(age);
@@ -530,6 +673,14 @@ pub fn debug_and_cleanup() {
     println!("[DEBUG] Map size: {} (removed {} old entries)", total_entries, removed_count);
     println!("[DEBUG] Average age: {:.2?}, Max age: {:.2?}", avg_age, max_age);
     println!("[DEBUG] Entries by type: {:?}", type_counts);
+    
+    // Show signature distribution (to identify multiple entries for same transaction)
+    let multi_sig_entries: Vec<_> = signature_counts.iter()
+        .filter(|(_, &count)| count > 1)
+        .collect();
+    if !multi_sig_entries.is_empty() {
+        println!("[DEBUG] Multiple entries for same signature: {:?}", multi_sig_entries);
+    }
     
     // Get worker stats
     let (worker_received, worker_built, worker_inserted, worker_errors) = get_worker_stats();

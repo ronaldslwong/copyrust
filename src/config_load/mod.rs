@@ -31,8 +31,8 @@ pub struct Config {
     pub cu_price_jito: u64,
     #[serde(rename = "solFilter")]
     pub sol_filter: f64,
-    #[serde(rename = "cuPrice")]
-    pub cu_price: u64,
+    #[serde(rename = "rpcCuPrice")]
+    pub rpc_cu_price: u64,
     #[serde(rename = "mintsMonitor")]
     pub mints_monitor: Vec<String>,
     #[serde(rename = "nonceAc")]
@@ -107,6 +107,17 @@ pub struct Config {
     pub nextblock_sell_tip: f64,
     #[serde(rename = "waitTime")]
     pub wait_time: f64,
+    // BlockRazor configuration
+    #[serde(rename = "blockrazor_url")]
+    pub blockrazor_url: String,
+    #[serde(rename = "blockrazor_api")]
+    pub blockrazor_api: String,
+    #[serde(rename = "blockrazor_cu_price")]
+    pub blockrazor_cu_price: u64,
+    #[serde(rename = "blockrazor_buy_tip")]
+    pub blockrazor_buy_tip: f64,
+    #[serde(rename = "blockrazor_sell_tip")]
+    pub blockrazor_sell_tip: f64,
 }
 
 pub fn load_config() -> Config {

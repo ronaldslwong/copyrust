@@ -17,8 +17,10 @@ use solana_sdk::hash::Hash;
 use tokio::sync::RwLock;
 use crate::send_tx::rpc::GLOBAL_LATEST_BLOCKHASH;
 use crate::send_tx::jito::init_jito_grpc_sender;
+use crate::init::wallet_loader::{get_nonce_account, load_nonce_account_global};
+use crate::send_tx::block_razor::initialize_blockrazor_client;
+use crate::send_tx::block_razor::init_blockrazor_performance_monitoring;
 pub static GLOBAL_RPC_CLIENT: OnceCell<RpcClient> = OnceCell::new();
-
 
 pub async fn initialize() -> (Config, Vec<DexPairData>) {
     println!("Initializing...");
@@ -33,6 +35,17 @@ pub async fn initialize() -> (Config, Vec<DexPairData>) {
 
     let keypair = get_wallet_keypair();
     println!("Wallet loaded: {}", keypair.pubkey());
+
+    match load_nonce_account_global("nonce-account.json") {
+        Ok(_) => {
+            let nonce_account = get_nonce_account();
+            println!("Nonce account loaded: {}", nonce_account.to_string());
+        }
+        Err(e) => {
+            eprintln!("Failed to load nonce accounts: {}. Continuing without nonce accounts.", e);
+            // You might want to set a flag or handle this differently
+        }
+    }
 
     initialize_nextblock_client(&config.nextblock_url, &config.nextblock_api, false).await;
     println!("Nextblock client initialized");
@@ -61,6 +74,13 @@ pub async fn initialize() -> (Config, Vec<DexPairData>) {
 
     init_jito_grpc_sender(&config.jito_url).await;
     println!("Jito gRPC sender initialized");
+
+    initialize_blockrazor_client(&config.blockrazor_url, &config.blockrazor_api, true).await;
+    println!("BlockRazor client initialized");
+    
+    // Initialize BlockRazor performance monitoring
+    init_blockrazor_performance_monitoring();
+    println!("BlockRazor performance monitoring initialized");
 
     if !config.birdeye_api.is_empty() {
         match load_birdeye_token_addresses(&config.birdeye_api, config.bird_eye_num_token as usize)

@@ -30,6 +30,8 @@ use std::time::Duration;
 use crate::grpc::monitoring_client::GLOBAL_MONITORING_DATA;
 use crate::send_tx::jito::send_jito_bundle;
 use crate::send_tx::jito::create_instruction_jito;
+use crate::send_tx::generic_sender::send_all_vendors_parallel;
+
 
 // Add global counters for monitoring triton worker performance
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -259,59 +261,55 @@ pub fn setup_crossbeam_worker() {
                         println!("[{}] - [TRITON] Building sell transaction for sig: {} (tx_type: {})", 
                             Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect, tx_type);
                         
-                        let compute_budget_instruction = create_instruction(
-                            config.cu_limit,
-                            config.cu_price0_slot,
+                        // Build vendor-specific sell transactions in parallel using the same function as buy
+                        match crate::build_tx::tx_builder::build_vendor_specific_transactions_parallel(
+                            sell_instruction,
                             tx_with_pubkey.mint,
-                            vec![sell_instruction.clone()],
-                        );
-                        // let final_instruction = create_instruction_nextblock(compute_budget_instruction,  (config.nextblock_sell_tip * 1_000_000_000.0) as u64);
-                        let final_instruction = create_instruction_zeroslot(compute_budget_instruction,  (config.zeroslot_sell_tip * 1_000_000_000.0) as u64);
-                        // let final_instruction = create_instruction_jito(compute_budget_instruction,  (config.zeroslot_sell_tip * 1_000_000_000.0) as u64);
-                        let tx = build_and_sign_transaction_fast(
-                            rpc,
-                            &final_instruction,
-                            get_wallet_keypair(),
-                        )
-                        .ok();
-                        
-                        if let Some(signed_tx) = tx {
-                            println!("[{}] - [TRITON] SUCCESS - Built sell transaction for sig: {}", 
-                                Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect);
-                            
-                            // Send transaction asynchronously without blocking the worker thread
-                            let sig_detect_clone = sig_detect.clone();
-                            let signed_tx_clone = signed_tx.clone();
-                            let sig_bytes_clone = sig_bytes.clone();
-                            
-                            ASYNC_RUNTIME.spawn(async move {
-                                let send_start = Instant::now();
-                                match send_tx_zeroslot(&signed_tx_clone).await {
-                                    // match send_jito_bundle(&signed_tx_clone).await {
-                                    Ok(sig) => {
-                                        TRITON_TRANSACTIONS_SENT.fetch_add(1, Ordering::Relaxed);
-                                        let send_time = send_start.elapsed();
-                                        println!(
-                                            "[{}] - [TRITON] SUCCESS - Sell tx sent with sig: {} (send time: {:.2?}, total sent: {})",
-                                            Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"),
-                                            sig,
-                                            send_time,
-                                            TRITON_TRANSACTIONS_SENT.load(Ordering::Relaxed)
-                                        );
-                                        // Remove the processed transaction from GLOBAL_TX_MAP to prevent memory leaks
-                                        GLOBAL_TX_MAP.remove(&sig_bytes_clone);
-                                    }
-                                    Err(e) => {
-                                        TRITON_ERRORS.fetch_add(1, Ordering::Relaxed);
-                                        eprintln!("[{}] - [TRITON] ERROR - Failed to send sell tx for sig: {} - Error: {:?}", 
-                                            Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect_clone, e);
-                                    }
+                            0, // target_token_buy not used for sell transactions
+                            &sig_detect, // sig_str for logging
+                        ) {
+                            Ok(vendor_transactions) => {
+                                if !vendor_transactions.is_empty() {
+                                    println!("[{}] - [TRITON] SUCCESS - Built {} vendor sell transactions for sig: {}", 
+                                        Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), vendor_transactions.len(), sig_detect);
+                                    
+                                    // Send all vendor transactions in parallel
+                                    let sig_detect_clone = sig_detect.clone();
+                                    let sig_bytes_clone = sig_bytes.clone();
+                                    let detection_time = parsed.detection_time.unwrap();
+                                    
+                                    ASYNC_RUNTIME.spawn(async move {
+                                        match send_all_vendors_parallel(&vendor_transactions, detection_time).await {
+                                            Ok((winning_vendor, sig)) => {
+                                                TRITON_TRANSACTIONS_SENT.fetch_add(1, Ordering::Relaxed);
+                                                println!(
+                                                    "[{}] - [TRITON] PARALLEL SELL SUCCESS - {} won with sig: {} | total sent: {}",
+                                                    Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                                                    winning_vendor,
+                                                    sig,
+                                                    TRITON_TRANSACTIONS_SENT.load(Ordering::Relaxed)
+                                                );
+                                                // Remove the processed transaction from GLOBAL_TX_MAP to prevent memory leaks
+                                                GLOBAL_TX_MAP.remove(&sig_bytes_clone);
+                                            }
+                                            Err(e) => {
+                                                TRITON_ERRORS.fetch_add(1, Ordering::Relaxed);
+                                                eprintln!("[{}] - [TRITON] ERROR - Parallel sell send failed for sig: {} - Error: {:?}", 
+                                                    Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect_clone, e);
+                                            }
+                                        }
+                                    });
+                                } else {
+                                    TRITON_ERRORS.fetch_add(1, Ordering::Relaxed);
+                                    eprintln!("[{}] - [TRITON] ERROR - No vendor sell transactions built for sig: {}", 
+                                        Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect);
                                 }
-                            });
-                        } else {
-                            TRITON_ERRORS.fetch_add(1, Ordering::Relaxed);
-                            eprintln!("[{}] - [TRITON] ERROR - Failed to build sell transaction for sig: {}", 
-                                Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect);
+                            }
+                            Err(e) => {
+                                TRITON_ERRORS.fetch_add(1, Ordering::Relaxed);
+                                eprintln!("[{}] - [TRITON] ERROR - Failed to build vendor sell transactions for sig: {} - Error: {:?}", 
+                                    Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig_detect, e);
+                            }
                         }
                     } else {
                         println!("[{}] - [TRITON] No sell transaction to build for sig: {} (tx_type: {})", 
@@ -325,8 +323,8 @@ pub fn setup_crossbeam_worker() {
                 
                 if let Some(sig_bytes) = &parsed.sig_bytes {
                     if let Some(mut tx_with_pubkey) = GLOBAL_TX_MAP.get_mut(sig_bytes) {
-                        // Send transaction asynchronously without blocking the worker thread
-                        let tx_clone = tx_with_pubkey.tx.clone();
+                        // Get vendor transactions for parallel sending
+                        let vendor_transactions = tx_with_pubkey.vendor_transactions.clone();
                         let detection_time = parsed.detection_time.unwrap();
                         let slot = parsed.slot.unwrap();
                         let sig_bytes_clone = sig_bytes.clone();
@@ -335,20 +333,15 @@ pub fn setup_crossbeam_worker() {
                         tx_with_pubkey.send_time = Instant::now();
                         
                         ASYNC_RUNTIME.spawn(async move {
-                            let send_start = Instant::now();
-                            match send_tx_zeroslot(&tx_clone).await {
-                            // match send_jito_bundle(&tx_clone).await {
-                                Ok(sig) => {
+                            match send_all_vendors_parallel(&vendor_transactions, detection_time).await {
+                                Ok((winning_vendor, sig)) => {
                                     TRITON_TRANSACTIONS_SENT.fetch_add(1, Ordering::Relaxed);
-                                    let send_time = send_start.elapsed();
-                                    let total_elapsed = send_start.duration_since(detection_time);
                                     
                                     println!(
-                                        "[{}] - [TRITON] SUCCESS - Sent buy tx with sig: {} | send time: {:.2?} | total elapsed: {:.2?} | total sent: {}",
+                                        "[{}] - [TRITON] PARALLEL SUCCESS - {} won with sig: {} | total sent: {}",
                                         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                                        winning_vendor,
                                         sig,
-                                        send_time,
-                                        total_elapsed,
                                         TRITON_TRANSACTIONS_SENT.load(Ordering::Relaxed)
                                     );
                                     
@@ -361,7 +354,7 @@ pub fn setup_crossbeam_worker() {
                                 }
                                 Err(e) => {
                                     TRITON_ERRORS.fetch_add(1, Ordering::Relaxed);
-                                    eprintln!("[crossbeam_worker] Error: send_tx_zeroslot failed: {:?}", e);
+                                    eprintln!("[crossbeam_worker] Error: Parallel send failed: {:?}", e);
                                 }
                             }
                         });
