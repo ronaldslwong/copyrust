@@ -118,6 +118,26 @@ pub struct Config {
     pub blockrazor_buy_tip: f64,
     #[serde(rename = "blockrazor_sell_tip")]
     pub blockrazor_sell_tip: f64,
+    // Flashblock configuration
+    #[serde(rename = "flashblock_url")]
+    pub flashblock_url: String,
+    #[serde(rename = "flashblock_api")]
+    pub flashblock_api: String,
+    #[serde(rename = "flashblock_cu_price")]
+    pub flashblock_cu_price: u64,
+    #[serde(rename = "flashblock_buy_tip")]
+    pub flashblock_buy_tip: f64,
+    #[serde(rename = "flashblock_sell_tip")]
+    pub flashblock_sell_tip: f64,
+    // Astralane configuration
+    #[serde(rename = "astralane_url")]
+    pub astralane_url: String,
+    #[serde(rename = "astralane_cu_price")]
+    pub astralane_cu_price: u64,
+    #[serde(rename = "astralane_buy_tip")]
+    pub astralane_buy_tip: f64,
+    #[serde(rename = "astralane_sell_tip")]
+    pub astralane_sell_tip: f64,
 }
 
 pub fn load_config() -> Config {

@@ -133,6 +133,7 @@ pub async fn process_arpc_msg(resp: &SubscribeResponse, _config: &Config) -> Opt
     let sig_string: String = sig_bytes.as_ref().map(|s| bs58::encode(s.as_slice()).into_string()).unwrap_or_default();
     
     let sig_extraction_time = detection_time.elapsed();
+    #[cfg(feature = "verbose_logging")]
     println!("[PROFILE][{}] Sig extraction: {:.2?}", sig_string, sig_extraction_time);
     
     // DEDUPLICATION: Check if we've already processed this signature
@@ -140,10 +141,12 @@ pub async fn process_arpc_msg(resp: &SubscribeResponse, _config: &Config) -> Opt
     if is_signature_processed(&sig_string) {
         // Skip processing - already handled
         let dedup_time = dedup_start.elapsed();
+        #[cfg(feature = "verbose_logging")]
         println!("[PROFILE][{}] Dedup check (skipped): {:.2?}", sig_string, dedup_time);
         return None;
     }
     let dedup_time = dedup_start.elapsed();
+    #[cfg(feature = "verbose_logging")]
     println!("[PROFILE][{}] Dedup check (passed): {:.2?}", sig_string, dedup_time);
     
     if let Some(ref sig_bytes) = sig_bytes {
@@ -151,6 +154,7 @@ pub async fn process_arpc_msg(resp: &SubscribeResponse, _config: &Config) -> Opt
     }
     
     let log_event_time = detection_time.elapsed();
+    #[cfg(feature = "verbose_logging")]
     println!("[PROFILE][{}] Log event: {:.2?}", sig_string, log_event_time);
     
     let parsed = ParsedArpcTrade {
@@ -163,11 +167,13 @@ pub async fn process_arpc_msg(resp: &SubscribeResponse, _config: &Config) -> Opt
     };
     
     let struct_creation_time = detection_time.elapsed();
+    #[cfg(feature = "verbose_logging")]
     println!("[PROFILE][{}] Struct creation: {:.2?}", sig_string, struct_creation_time);
     
     let send_start = std::time::Instant::now();
     send_parsed_arpc_trade(parsed);
     let send_time = send_start.elapsed();
+    #[cfg(feature = "verbose_logging")]
     println!("[PROFILE][{}] Send to worker: {:.2?}", sig_string, send_time);
 
     // Check if this message contains any of the target program IDs
@@ -183,9 +189,11 @@ pub async fn process_arpc_msg(resp: &SubscribeResponse, _config: &Config) -> Opt
         }
     }
     let program_check_time = program_check_start.elapsed();
+    #[cfg(feature = "verbose_logging")]
     println!("[PROFILE][{}] Program ID check: {:.2?}", sig_string, program_check_time);
 
     let total_time = total_start.elapsed();
+    #[cfg(feature = "verbose_logging")]
     println!("[PROFILE][{}] TOTAL parser time: {:.2?}", sig_string, total_time);
 
     // Return a dummy ParsedTrade if we have target programs (this will increment the processed counter)

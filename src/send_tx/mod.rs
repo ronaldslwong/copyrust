@@ -6,3 +6,5 @@ pub mod jito;
 pub mod jito_lib;
 pub mod jito_authenticator;
 pub mod block_razor;
+pub mod flashblock;
+pub mod astralane;

@@ -39,6 +39,17 @@ blockrazor_cu_price = 100_000
 blockrazor_buy_tip = 0.001
 blockrazor_sell_tip = 0.001
 
+flashblock_url = "http://fra.flashblock.trade"
+flashblock_api = "f4bd417bdb74404e"
+flashblock_cu_price = 100_000
+flashblock_buy_tip = 0.001
+flashblock_sell_tip = 0.001
+
+astralane_url = "http://fr.gateway.astralane.io/iris?api-key=tradeX1iFVOAgDvrVjoG8ERGfgSwzFt2jdrFmJhImy4s0cwKFwrKev5uV5BcAVJz"
+astralane_cu_price = 100_000
+astralane_buy_tip = 0.001
+astralane_sell_tip = 0.001
+
 jitoUrl = "https://ny.mainnet.block-engine.jito.wtf:443"
 jito_buy_tip = 0.001
 jito_sell_tip = 0.001

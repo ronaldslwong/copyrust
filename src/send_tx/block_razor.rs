@@ -133,7 +133,7 @@ pub async fn send_tx_blockrazor(
     let total_start = Instant::now();
     let now = Utc::now();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_PROFILE] 🚀 Starting BlockRazor send transaction", 
         now.format("%Y-%m-%d %H:%M:%S%.3f"));
     
@@ -143,7 +143,7 @@ pub async fn send_tx_blockrazor(
     let mut client = Arc::try_unwrap(client).unwrap_or_else(|arc| (*arc).clone());
     let client_time = client_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_PROFILE] 📡 Client acquisition: {:.2?}", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), client_time);
     
@@ -152,7 +152,7 @@ pub async fn send_tx_blockrazor(
     let tx_bytes = bincode::serialize(tx)?;
     let serialize_time = serialize_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_PROFILE] 📦 Transaction serialization: {:.2?} (size: {} bytes)", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), serialize_time, tx_bytes.len());
     
@@ -161,7 +161,7 @@ pub async fn send_tx_blockrazor(
     let tx_b64 = general_purpose::STANDARD.encode(&tx_bytes);
     let encode_time = encode_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_PROFILE] 🔤 Base64 encoding: {:.2?} (encoded size: {} chars)", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), encode_time, tx_b64.len());
     
@@ -175,7 +175,7 @@ pub async fn send_tx_blockrazor(
     };
     let request_time = request_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_PROFILE] 📝 Request building: {:.2?}", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), request_time);
     
@@ -186,7 +186,7 @@ pub async fn send_tx_blockrazor(
         .insert("apikey", MetadataValue::from_str(token)?);
     let grpc_request_time = grpc_request_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_PROFILE] 🔗 gRPC request creation: {:.2?}", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), grpc_request_time);
     
@@ -195,7 +195,7 @@ pub async fn send_tx_blockrazor(
     let response = client.send_transaction(req).await?;
     let network_time = network_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_PROFILE] 🌐 Network call: {:.2?}", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), network_time);
     
@@ -204,7 +204,7 @@ pub async fn send_tx_blockrazor(
     let signature = response.into_inner().signature;
     let response_time = response_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_PROFILE] 📨 Response processing: {:.2?}", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), response_time);
     
@@ -212,7 +212,7 @@ pub async fn send_tx_blockrazor(
     let total_time = total_start.elapsed();
     let processing_time = total_time - network_time; // Time spent in our code
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     {
         println!("[{}] - [BLOCKRAZOR_PROFILE] 📊 PERFORMANCE BREAKDOWN:", 
             Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"));
@@ -295,7 +295,7 @@ pub fn create_instruction_blockrazor(
     let total_start = Instant::now();
     let now = Utc::now();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_INSTRUCTION_PROFILE] 🔧 Starting BlockRazor instruction building", 
         now.format("%Y-%m-%d %H:%M:%S%.3f"));
     
@@ -306,7 +306,7 @@ pub fn create_instruction_blockrazor(
     let adjusted_cu_price = cu_price + random_addition;
     let rng_time = rng_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_INSTRUCTION_PROFILE] 🎲 RNG generation: {:.2?} (price: {} -> {})", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), rng_time, cu_price, adjusted_cu_price);
     
@@ -315,7 +315,7 @@ pub fn create_instruction_blockrazor(
     let keypair: &'static Keypair = get_wallet_keypair();
     let keypair_time = keypair_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_INSTRUCTION_PROFILE] 🔑 Keypair access: {:.2?}", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), keypair_time);
     
@@ -324,7 +324,7 @@ pub fn create_instruction_blockrazor(
     let price_ix = compute_budget::ComputeBudgetInstruction::set_compute_unit_price(adjusted_cu_price);
     let compute_time = compute_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_INSTRUCTION_PROFILE] 💰 Compute budget instruction: {:.2?}", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), compute_time);
     
@@ -334,7 +334,7 @@ pub fn create_instruction_blockrazor(
     let tip_account = BLOCKRAZOR_TIP_ACCOUNTS[random_index];
     let tip_select_time = tip_select_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_INSTRUCTION_PROFILE] 🎯 Tip account selection: {:.2?} (account: {})", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), tip_select_time, tip_account);
     
@@ -343,7 +343,7 @@ pub fn create_instruction_blockrazor(
     let tip_ix = blockrazor_tip(tip_account, tip, &keypair.pubkey());
     let tip_ix_time = tip_ix_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_INSTRUCTION_PROFILE] 💸 Tip instruction creation: {:.2?} (tip: {} lamports)", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), tip_ix_time, tip);
     
@@ -355,7 +355,7 @@ pub fn create_instruction_blockrazor(
     );
     let nonce_time = nonce_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_INSTRUCTION_PROFILE] 🔄 Nonce instruction creation: {:.2?} (nonce: {})", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), nonce_time, nonce_account);
     
@@ -365,14 +365,14 @@ pub fn create_instruction_blockrazor(
     result.extend(instructions);
     let combine_time = combine_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_INSTRUCTION_PROFILE] 🔗 Instruction combination: {:.2?} (total instructions: {})", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), combine_time, result.len());
     
     // Calculate total time and breakdown
     let total_time = total_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     {
         println!("[{}] - [BLOCKRAZOR_INSTRUCTION_PROFILE] 📊 INSTRUCTION BUILDING BREAKDOWN:", 
             Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"));
@@ -427,7 +427,7 @@ pub fn blockrazor_tip(tip_ac: &str, tip: u64, from_pubkey: &Pubkey) -> Instructi
     let total_start = Instant::now();
     let now = Utc::now();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_TIP_PROFILE] 💸 Starting BlockRazor tip instruction creation", 
         now.format("%Y-%m-%d %H:%M:%S%.3f"));
     
@@ -436,7 +436,7 @@ pub fn blockrazor_tip(tip_ac: &str, tip: u64, from_pubkey: &Pubkey) -> Instructi
     let tip_pubkey = Pubkey::from_str(tip_ac).expect("Invalid pubkey");
     let parse_time = parse_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_TIP_PROFILE] 🔍 Tip account parsing: {:.2?} (account: {})", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), parse_time, tip_ac);
     
@@ -445,14 +445,14 @@ pub fn blockrazor_tip(tip_ac: &str, tip: u64, from_pubkey: &Pubkey) -> Instructi
     let instruction = system_instruction::transfer(from_pubkey, &tip_pubkey, tip);
     let transfer_time = transfer_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     println!("[{}] - [BLOCKRAZOR_TIP_PROFILE] 💰 Transfer instruction creation: {:.2?} (tip: {} lamports)", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), transfer_time, tip);
     
     // Calculate total time and breakdown
     let total_time = total_start.elapsed();
     
-    #[cfg(feature = "verbose_profiling")]
+    #[cfg(feature = "verbose_logging")]
     {
         println!("[{}] - [BLOCKRAZOR_TIP_PROFILE] 📊 TIP INSTRUCTION BREAKDOWN:", 
             Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"));

@@ -81,6 +81,9 @@ pub async fn initialize() -> (Config, Vec<DexPairData>) {
     // Initialize BlockRazor performance monitoring
     init_blockrazor_performance_monitoring();
     println!("BlockRazor performance monitoring initialized");
+    
+    // Flashblock HTTP client is initialized lazily with connection pooling
+    println!("Flashblock HTTP client ready (lazy initialization)");
 
     if !config.birdeye_api.is_empty() {
         match load_birdeye_token_addresses(&config.birdeye_api, config.bird_eye_num_token as usize)
