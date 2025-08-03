@@ -173,7 +173,7 @@ pub fn build_pump_fun_instruction(
             AccountMeta::new(accounts.creator_fee_vault, false),
             AccountMeta::new_readonly(accounts.mint_authority, false),
             AccountMeta::new_readonly(accounts.pump_fun_program, false),
-            AccountMeta::new_readonly(accounts.global_volume_accumulator, false),
+            AccountMeta::new(accounts.global_volume_accumulator, false),
             AccountMeta::new_readonly(accounts.user_volume_accumulator, false),
         ];
     } else {
@@ -190,7 +190,7 @@ pub fn build_pump_fun_instruction(
             AccountMeta::new_readonly(accounts.spl_token_program, false),
             AccountMeta::new_readonly(accounts.mint_authority, false),
             AccountMeta::new_readonly(accounts.pump_fun_program, false),
-            AccountMeta::new_readonly(accounts.global_volume_accumulator, false),
+            AccountMeta::new(accounts.global_volume_accumulator, false),
             AccountMeta::new_readonly(accounts.user_volume_accumulator, false),
         ];
     }

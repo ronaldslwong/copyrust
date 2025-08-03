@@ -157,7 +157,7 @@ pub fn build_pump_swap_instruction(
         AccountMeta::new_readonly(accounts.pump_program, false),
         AccountMeta::new(accounts.coin_creator_vault_ata, false),
         AccountMeta::new_readonly(accounts.coin_creator_vault_authority, false),
-        AccountMeta::new_readonly(accounts.global_volume_accumulator, false),
+        AccountMeta::new(accounts.global_volume_accumulator, false),
         AccountMeta::new_readonly(accounts.user_volume_accumulator, false),
     ];
     Instruction {
