@@ -317,16 +317,16 @@ pub async fn send_tx_flashblock(tx: &Transaction) -> Result<String, Box<dyn std:
     let extract_start = Instant::now();
     let signature = if let Some(data) = response_json.get("data") {
         println!("[FLASHBLOCK_DEBUG] 📋 Found 'data' field in response");
-        if let Some(transaction_ids) = data.get("transactionIds") {
-            println!("[FLASHBLOCK_DEBUG] 📋 Found 'transactionIds' field in data");
+        if let Some(transaction_ids) = data.get("signatures") {
+            println!("[FLASHBLOCK_DEBUG] 📋 Found 'signatures' field in data");
             if let Some(ids) = transaction_ids.as_array() {
-                println!("[FLASHBLOCK_DEBUG] 📋 transactionIds is an array with {} elements", ids.len());
+                println!("[FLASHBLOCK_DEBUG] 📋 signatures is an array with {} elements", ids.len());
                 if let Some(first_id) = ids.first() {
                     let sig = first_id.as_str().unwrap_or("").to_string();
                     println!("[FLASHBLOCK_DEBUG] ✅ Extracted signature: {}", sig);
                     sig
                 } else {
-                    println!("[FLASHBLOCK_DEBUG] ❌ No first element in transactionIds array");
+                    println!("[FLASHBLOCK_DEBUG] ❌ No first element in signatures array");
                     return Err(Box::new(std::io::Error::new(
                         std::io::ErrorKind::Other, 
                         "No transaction IDs in response"

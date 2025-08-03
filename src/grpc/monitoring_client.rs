@@ -21,6 +21,7 @@ use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::build_tx::pump_swap::{get_instruction_accounts_migrate_pump, PumpAmmAccounts};
+use std::time::Instant;
 
 /// Global struct to store monitoring data
 #[derive(Debug, Clone)]
@@ -65,57 +66,38 @@ pub fn get_monitoring_stats() -> (usize, usize, usize) {
 // - Lock contention during removal operations
 
 /// Purge old monitoring data (older than 30 seconds)
-pub fn purge_old_monitoring_data() {
-    use std::time::Duration;
-    
+fn purge_old_monitoring_data() {
     loop {
-        std::thread::sleep(Duration::from_secs(15)); // Check every 15 seconds (was 30)
+        // OPTIMIZATION: More frequent cleanup (was 30 seconds)
+        std::thread::sleep(Duration::from_secs(10)); // Was 30 seconds
         
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        
         let mut to_remove = Vec::new();
         
-        // More aggressive cleanup - remove data older than 60 seconds (was 120)
+        // OPTIMIZATION: Reduced retention from 60 to 30 seconds
         for entry in GLOBAL_MONITORING_DATA.iter() {
-            if current_time - entry.value().timestamp > 60 { // Reduced from 120 to 60 seconds
+            if current_time - entry.value().timestamp > 30 { // Was 60 seconds
                 to_remove.push(*entry.key());
             }
         }
         
         // Remove old entries
-        let removed_count = to_remove.len();
         for key in to_remove {
-            if let Some((_, data)) = GLOBAL_MONITORING_DATA.remove(&key) {
-                let now = Utc::now();
-                println!("[{}] - [Monitoring] Removed old monitoring data for mint: {} (age: {}s)", 
-                    now.format("%Y-%m-%d %H:%M:%S%.3f"),
-                    data.mint_pubkey, 
-                    current_time - data.timestamp
-                );
-            }
+            GLOBAL_MONITORING_DATA.remove(&key);
         }
         
-        // Log map size periodically or if large cleanup occurred
-        if GLOBAL_MONITORING_DATA.len() > 0 || removed_count > 10 {
-            let now = Utc::now();
-            println!("[{}] - [Monitoring] GLOBAL_MONITORING_DATA size: {} (removed {} entries)", 
-                now.format("%Y-%m-%d %H:%M:%S%.3f"),
-                GLOBAL_MONITORING_DATA.len(),
-                removed_count
-            );
-        }
-        
-        // Emergency cleanup if map is too large
-        if GLOBAL_MONITORING_DATA.len() > 500 {
-            let now = Utc::now();
-            println!("[{}] - [Monitoring] EMERGENCY: Map too large ({}), clearing all entries", 
-                now.format("%Y-%m-%d %H:%M:%S%.3f"), 
-                GLOBAL_MONITORING_DATA.len()
-            );
+        // OPTIMIZATION: Emergency cleanup if map gets too large
+        if GLOBAL_MONITORING_DATA.len() > 300 { // Reduced from 500 to 300
+            println!("[Monitoring] WARNING: Monitoring data map too large ({} entries), clearing...", GLOBAL_MONITORING_DATA.len());
             GLOBAL_MONITORING_DATA.clear();
+        }
+        
+        // OPTIMIZATION: Log cleanup stats periodically
+        if GLOBAL_MONITORING_DATA.len() > 50 {
+            println!("[Monitoring] Data cleanup: {} entries remaining", GLOBAL_MONITORING_DATA.len());
         }
     }
 }
@@ -292,6 +274,7 @@ pub async fn start_arpc_monitoring_subscription(
                 MONITORING_ERRORS.fetch_add(1, Ordering::Relaxed);
                 let processing_time = processing_start.elapsed();
                 let now = Utc::now();
+                #[cfg(feature = "verbose_logging")]
                 eprintln!("[{}] - [MONITORING ARPC] Error processing message: {} (processing time: {:.2?})", 
                     now.format("%Y-%m-%d %H:%M:%S%.3f"), e, processing_time);
             }
@@ -397,16 +380,13 @@ fn parse_raydium_launchpad_instruction(
     // Get the mint pubkey (token_1_mint from RayCpmmSwapAccounts)
     let mint_pubkey = migrated_accounts.token_1_mint;
     
-    // Get current timestamp
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    
     // Create monitoring data
     let monitoring_data = MonitoringData {
         mint_pubkey,
-        timestamp,
+        timestamp: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
         ray_cpmm_accounts: migrated_accounts,
         pump_fun_accounts: PumpAmmAccounts::default(),
     };
@@ -442,16 +422,13 @@ fn parse_pump_fun_instruction(
     // Get the mint pubkey (token_1_mint from RayCpmmSwapAccounts)
     let mint_pubkey = migrated_accounts.base_mint;
     
-    // Get current timestamp
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    
     // Create monitoring data
     let monitoring_data = MonitoringData {
         mint_pubkey,
-        timestamp,
+        timestamp: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
         ray_cpmm_accounts: RayCpmmSwapAccounts::default(),
         pump_fun_accounts: migrated_accounts,
     };

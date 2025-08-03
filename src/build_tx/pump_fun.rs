@@ -11,6 +11,7 @@ use crate::constants::pump_fun::{GLOBAL_ACCOUNT, FEE_RECIPIENT, MINT_AUTHORITY, 
 use crate::init::wallet_loader::get_wallet_keypair;
 use solana_sdk::signature::Signer;
 use crate::build_tx::pump_swap::SwapDirection;
+use std::str::FromStr;
 
 /// Represents the state of a bonding curve on pump.fun.
 /// This struct is based on the implementation from the provided GitHub link.
@@ -59,6 +60,8 @@ pub struct PumpFunAccounts {
     pub creator_fee_vault: Pubkey,
     pub mint_authority: Pubkey,
     pub pump_fun_program: Pubkey,
+    pub global_volume_accumulator: Pubkey,
+    pub user_volume_accumulator: Pubkey,
 }
 
 impl Default for PumpFunAccounts {
@@ -76,6 +79,8 @@ impl Default for PumpFunAccounts {
             creator_fee_vault: Pubkey::default(),
             mint_authority: MINT_AUTHORITY,
             pump_fun_program: PUMP_FUN_PROGRAM_ID_PUBKEY,
+            global_volume_accumulator: global_volume_accumulator_pda(),
+            user_volume_accumulator: user_volume_accumulator_pda(&Pubkey::default()),
         }
     }
 }
@@ -168,6 +173,8 @@ pub fn build_pump_fun_instruction(
             AccountMeta::new(accounts.creator_fee_vault, false),
             AccountMeta::new_readonly(accounts.mint_authority, false),
             AccountMeta::new_readonly(accounts.pump_fun_program, false),
+            AccountMeta::new_readonly(accounts.global_volume_accumulator, false),
+            AccountMeta::new_readonly(accounts.user_volume_accumulator, false),
         ];
     } else {
         metas = vec![
@@ -183,6 +190,8 @@ pub fn build_pump_fun_instruction(
             AccountMeta::new_readonly(accounts.spl_token_program, false),
             AccountMeta::new_readonly(accounts.mint_authority, false),
             AccountMeta::new_readonly(accounts.pump_fun_program, false),
+            AccountMeta::new_readonly(accounts.global_volume_accumulator, false),
+            AccountMeta::new_readonly(accounts.user_volume_accumulator, false),
         ];
     }
     Instruction {
@@ -270,6 +279,8 @@ pub fn get_instruction_accounts(
     pump_fun_accounts.bonding_curve_ata = bonding_curve_ata;
     pump_fun_accounts.user_ata = user_ata;
     pump_fun_accounts.user = user;
+    pump_fun_accounts.global_volume_accumulator = global_volume_accumulator_pda();
+    pump_fun_accounts.user_volume_accumulator = user_volume_accumulator_pda(&user);
     // pump_fun_accounts.creator_fee_vault = creator_fee_vault;
     
     pump_fun_accounts
@@ -282,4 +293,21 @@ pub fn get_bonding_curve_state(pump_fun_accounts: &PumpFunAccounts) -> BondingCu
     let bonding_curve_state = BondingCurve::deserialize(&mut &account_data[8..]).expect("Failed to deserialize bonding curve state");
     
     bonding_curve_state
+}
+
+// Pump program
+pub fn global_volume_accumulator_pda() -> Pubkey {
+    let (global_volume_accumulator, _bump) = Pubkey::find_program_address(
+        &[b"global_volume_accumulator"],
+        &Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P").unwrap(),
+    );
+    global_volume_accumulator
+}
+
+pub fn user_volume_accumulator_pda(user: &Pubkey) -> Pubkey {
+    let (user_volume_accumulator, _bump) = Pubkey::find_program_address(
+        &[b"user_volume_accumulator", user.as_ref()],
+        &Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P").unwrap(),
+    );
+    user_volume_accumulator
 }

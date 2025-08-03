@@ -11,6 +11,7 @@ use crate::send_tx::nextblock::send_tx_nextblock;
 use crate::send_tx::block_razor::send_tx_blockrazor;
 use crate::send_tx::flashblock::send_tx_flashblock;
 use crate::send_tx::astralane::send_tx_astralane;
+use crate::send_tx::temporal::send_tx_temporal;
 use chrono::Utc;
 use std::time::Instant;
 use rayon::prelude::*;
@@ -94,6 +95,13 @@ pub async fn send_to_vendor(vendor_name: &str, transaction: &Transaction) -> Res
                 .map_err(|e| Box::new(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     format!("Astralane send failed: {}", e)
+                )) as Box<dyn std::error::Error + Send + Sync>)
+        }
+        "temporal" => {
+            send_tx_temporal(transaction).await
+                .map_err(|e| Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Temporal send failed: {}", e)
                 )) as Box<dyn std::error::Error + Send + Sync>)
         }
         _ => {

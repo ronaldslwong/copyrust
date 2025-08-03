@@ -205,10 +205,15 @@ async fn main() {
 
     let triton_config = Arc::clone(&config_arc);
     let handle = tokio::spawn(async move {
-        let endpoint = triton_config.grpc_endpoint.clone();
-        println!("[Main] Starting Triton gRPC client...");
-        if let Err(e) = subscribe_with_retry_triton(&endpoint, triton_config).await {
-            eprintln!("[Main] Triton gRPC client error: {}", e);
+        println!("[Main] Starting Triton multi-feed gRPC clients...");
+        
+        // OPTIMIZATION: Test network latency first
+        if let Err(e) = crate::triton_grpc::client::test_endpoint_latency().await {
+            eprintln!("[Main] Network latency test failed: {}", e);
+        }
+        
+        if let Err(e) = crate::triton_grpc::setup_multiple_triton_feeds().await {
+            eprintln!("[Main] Triton multi-feed gRPC client error: {}", e);
         }
     });
     handles.push(handle);

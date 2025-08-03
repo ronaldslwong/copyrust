@@ -1,7 +1,8 @@
 #grpcEndpoint = "http://us.grpc.asuga.io:10000"
 #grpcEndpoint = "http://grpc.corvus-labs.io:10101"
 #arpcEndpoint = "http://arpc.corvus-labs.io:20202"
-grpcEndpoint = "http://86.105.224.13:10101"
+grpcEndpoint1 = "http://86.105.224.13:10101"
+grpcEndpoint2 = "http://ny.grpc.asuga.io:10000"  # Backup endpoint - can be same or different
 arpcEndpoint = "http://86.105.224.13:20202"
 #rpcEndpoint = "http://us.rpc.asuga.io"
 #rpcEndpoint = "http://rpc.corvus-labs.io"
@@ -50,6 +51,11 @@ astralane_cu_price = 100_000
 astralane_buy_tip = 0.001
 astralane_sell_tip = 0.001
 
+temporal_url = "http://fra2.nozomi.temporal.xyz/?c=8158b6f0-e4dc-4dcc-b58f-d45a66ae5c74"
+temporal_cu_price = 100_000
+temporal_buy_tip = 0.001
+temporal_sell_tip = 0.001
+
 jitoUrl = "https://ny.mainnet.block-engine.jito.wtf:443"
 jito_buy_tip = 0.001
 jito_sell_tip = 0.001
@@ -64,10 +70,10 @@ accountsMonitor = [
   #"suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK",
   #"suqh5sH7r8HyJ7q8scBimULPkPpA557prMG47xCHQfK",
 
-  #"LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
+  "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
   #"CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
   #"CpKdPv3L8HGcgzbBNY9tDH3CNB7DavXma86VfEfSVfEg",
-  "AxiomfHaWDemCFBLBayqnEnNwE6b7B2Qz3UmzMpgbMG6",
+  #"AxiomfHaWDemCFBLBayqnEnNwE6b7B2Qz3UmzMpgbMG6",
 ]
 
 mintsMonitor = [

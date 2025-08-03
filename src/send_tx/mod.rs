@@ -8,3 +8,4 @@ pub mod jito_authenticator;
 pub mod block_razor;
 pub mod flashblock;
 pub mod astralane;
+pub mod temporal;

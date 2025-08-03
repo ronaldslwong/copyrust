@@ -24,6 +24,7 @@ use crate::send_tx::rpc::create_instruction_rpc;
 use crate::send_tx::block_razor::create_instruction_blockrazor;
 use crate::send_tx::flashblock::create_instruction_flashblock;
 use crate::send_tx::astralane::create_instruction_astralane;
+use crate::send_tx::temporal::create_instruction_temporal;
 
 // Thread-local runtime storage for better concurrency
 use std::cell::RefCell;
@@ -710,6 +711,12 @@ pub fn build_vendor_specific_transactions_parallel(
             cu_price: config.astralane_cu_price,
             use_jito: false,
         }),
+        ("temporal", VendorConfig {
+            name: "temporal",
+            tip_amount: (config.temporal_buy_tip * 1_000_000_000.0) as u64,
+            cu_price: config.temporal_cu_price,
+            use_jito: false,
+        }),
     ];
     
     // Get the same nonce account and blockhash for all vendor transactions (prevents multiple advances)
@@ -768,6 +775,14 @@ pub fn build_vendor_specific_transactions_parallel(
             }
             if config.name == "astralane" {
                 instructions = create_instruction_astralane(
+                    instructions,
+                    config.tip_amount,
+                    config.cu_price,
+                    nonce_pubkey,
+                );
+            }
+            if config.name == "temporal" {
+                instructions = create_instruction_temporal(
                     instructions,
                     config.tip_amount,
                     config.cu_price,

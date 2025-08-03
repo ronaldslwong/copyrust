@@ -18,6 +18,7 @@ use solana_client::rpc_config::RpcAccountInfoConfig;
 use solana_client::rpc_client::RpcClient;
 use borsh::{BorshDeserialize, BorshSerialize};
 use crate::build_tx::utils::get_account;
+use std::str::FromStr;
 
 /// Enum for swap direction
 #[derive(PartialEq, Copy, Clone)]
@@ -77,6 +78,8 @@ pub struct PumpAmmAccounts {
     pub pump_program: Pubkey,
     pub coin_creator_vault_ata: Pubkey,
     pub coin_creator_vault_authority: Pubkey,
+    pub global_volume_accumulator: Pubkey,
+    pub user_volume_accumulator: Pubkey,
 }
 
 impl Default for PumpAmmAccounts {
@@ -101,6 +104,8 @@ impl Default for PumpAmmAccounts {
             pump_program: Pubkey::default(),
             coin_creator_vault_ata: Pubkey::default(),
             coin_creator_vault_authority: Pubkey::default(),
+            global_volume_accumulator: Pubkey::default(),
+            user_volume_accumulator: Pubkey::default(),
         }
     }
 }
@@ -152,6 +157,8 @@ pub fn build_pump_swap_instruction(
         AccountMeta::new_readonly(accounts.pump_program, false),
         AccountMeta::new(accounts.coin_creator_vault_ata, false),
         AccountMeta::new_readonly(accounts.coin_creator_vault_authority, false),
+        AccountMeta::new_readonly(accounts.global_volume_accumulator, false),
+        AccountMeta::new_readonly(accounts.user_volume_accumulator, false),
     ];
     Instruction {
         program_id: pump_swap_constants::PUMP_SWAP_PROGRAM_ID,
@@ -350,6 +357,8 @@ pub fn get_instruction_accounts(
         pump_program: pump_swap_constants::PUMP_SWAP_PROGRAM_ID,
         coin_creator_vault_ata: get_account(account_keys, accounts, 17),
         coin_creator_vault_authority: get_account(account_keys, accounts, 18),
+        global_volume_accumulator: global_volume_accumulator_pda(),
+        user_volume_accumulator: user_volume_accumulator_pda(&get_wallet_keypair().pubkey()),
     }
     // TODO: Map the correct indices for each field as per the actual instruction layout
 }
@@ -389,6 +398,8 @@ pub fn get_instruction_accounts_rpc(
         pump_program: pump_swap_constants::PUMP_SWAP_PROGRAM_ID,
         coin_creator_vault_ata: spl_associated_token_account::get_associated_token_address(&fee_va, &pump_swap_constants::WSOL),
         coin_creator_vault_authority: fee_va,
+        global_volume_accumulator: global_volume_accumulator_pda(),
+        user_volume_accumulator: user_volume_accumulator_pda(&get_wallet_keypair().pubkey()),
     }
     // TODO: Map the correct indices for each field as per the actual instruction layout
 }
@@ -512,6 +523,25 @@ pub fn get_instruction_accounts_migrate_pump(
         pump_program: pump_swap_constants::PUMP_SWAP_PROGRAM_ID,
         coin_creator_vault_ata: creator_vault_ata,
         coin_creator_vault_authority: creator_vault_authority,
+        global_volume_accumulator: global_volume_accumulator_pda(),
+        user_volume_accumulator: user_volume_accumulator_pda(&get_wallet_keypair().pubkey()),
     }
     // TODO: Map the correct indices for each field as per the actual instruction layout
+}
+
+// PumpSwap program
+pub fn global_volume_accumulator_pda() -> Pubkey {
+    let (global_volume_accumulator, _bump) = Pubkey::find_program_address(
+        &[b"global_volume_accumulator"],
+        &Pubkey::from_str("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA").unwrap(),
+    );
+    global_volume_accumulator
+}
+
+pub fn user_volume_accumulator_pda(user: &Pubkey) -> Pubkey {
+    let (user_volume_accumulator, _bump) = Pubkey::find_program_address(
+        &[b"user_volume_accumulator", user.as_ref()],
+        &Pubkey::from_str("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA").unwrap(),
+    );
+    user_volume_accumulator
 }

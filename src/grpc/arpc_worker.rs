@@ -1,4 +1,4 @@
-use crossbeam::channel::{unbounded, Sender};
+use crossbeam::channel::{Sender};
 use crate::arpc::CompiledInstruction;
 use once_cell::sync::OnceCell;
 use std::time::Instant;
@@ -15,12 +15,8 @@ use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use std::sync::Arc;
 use crate::config_load::GLOBAL_CONFIG;
-use crate::build_tx::tx_builder::{default_instruction, build_and_sign_transaction, simulate_transaction};
-use crate::init::initialize::GLOBAL_RPC_CLIENT;
-use crate::build_tx::tx_builder::create_instruction;
-use crate::init::wallet_loader::get_wallet_keypair;
+use crate::build_tx::tx_builder::{default_instruction};
 use chrono::Utc;
-use crate::send_tx::zero_slot::create_instruction_zeroslot;
 use crate::constants::axiom::{AXIOM_PUMP_SWAP_PROGRAM_ID_BYTES, AXIOM_PUMP_FUN_PROGRAM_ID_BYTES};
 use crate::constants::raydium_launchpad::RAYDIUM_LAUNCHPAD_PROGRAM_ID_BYTES;
 use crate::constants::raydium_cpmm::RAYDIUM_CPMM_PROGRAM_ID_BYTES;
@@ -28,8 +24,6 @@ use crate::grpc::programs::raydium_launchpad::raydium_launchpad_build_buy_tx;
 use crate::grpc::programs::axiom::axiom_pump_swap_build_buy_tx;
 use crate::grpc::programs::axiom::axiom_pump_fun_build_buy_tx;
 use crate::grpc::programs::raydium_cpmm::raydium_cpmm_build_buy_tx;
-use crate::build_tx::tx_builder::build_and_sign_transaction_fast;
-use crate::send_tx::jito::create_instruction_jito;
 use std::collections::HashMap;
 
 // Add global counters for monitoring worker performance
@@ -99,6 +93,38 @@ pub struct ParsedArpcTrade {
     pub tx_instructions: Arc<Vec<CompiledInstruction>>,
     pub account_keys: Arc<Vec<Vec<u8>>>,
     // Add more fields if needed for the worker
+}
+
+// OPTIMIZATION: Minimal version for cases where we only need signature and slot
+#[derive(Debug, Clone)]
+pub struct ParsedArpcTradeMinimal {
+    pub sig_bytes: Option<Vec<u8>>, // No Arc overhead
+    pub slot: u64,
+    pub detection_time: Instant,
+    // No expensive fields - only add what you actually need
+}
+
+// OPTIMIZATION: Lazy version that only creates Arc when needed
+#[derive(Debug)]
+pub struct ParsedArpcTradeLazy<'a> {
+    pub sig_bytes: Option<Vec<u8>>,
+    pub slot: u64,
+    pub detection_time: Instant,
+    pub tx_instructions: Option<&'a Vec<CompiledInstruction>>, // Reference only
+    pub account_keys: Option<&'a Vec<Vec<u8>>>, // Reference only
+}
+
+impl<'a> ParsedArpcTradeLazy<'a> {
+    // Convert to full version only when needed
+    pub fn into_full(self) -> ParsedArpcTrade {
+        ParsedArpcTrade {
+            sig_bytes: self.sig_bytes.map(|s| Arc::new(s)),
+            slot: self.slot,
+            detection_time: self.detection_time,
+            tx_instructions: Arc::new(self.tx_instructions.unwrap_or(&Vec::new()).clone()),
+            account_keys: Arc::new(self.account_keys.unwrap_or(&Vec::new()).clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -181,15 +207,14 @@ fn purge_old_entries_task() {
     use std::time::Duration;
     
     loop {
-        std::thread::sleep(Duration::from_secs(5)); // Check every 5 seconds
+        std::thread::sleep(Duration::from_secs(5)); // OPTIMIZATION: More frequent cleanup (was 5 seconds)
         
         let now = Instant::now();
-        let purge_threshold = Duration::from_secs(8); // 8 seconds (was 10)
-        
         let mut to_remove = Vec::new();
-        let mut removed_count = 0;
         
-        // Collect keys of entries to remove
+        // OPTIMIZATION: Reduced retention time from 10 to 6 seconds
+        let purge_threshold = Duration::from_secs(10); // Was 10 seconds
+        
         for entry in GLOBAL_TX_MAP.iter() {
             if now.duration_since(entry.value().created_at) > purge_threshold {
                 to_remove.push(entry.key().clone());
@@ -198,34 +223,25 @@ fn purge_old_entries_task() {
         
         // Remove old entries
         for key in to_remove {
-            if let Some((_, tx_with_pubkey)) = GLOBAL_TX_MAP.remove(&key) {
-                removed_count += 1;
-                println!("[Purge] Removed old entry for tx_type: {} (age: {:.2?})", 
-                    tx_with_pubkey.tx_type, 
-                    now.duration_since(tx_with_pubkey.created_at)
-                );
-            }
+            GLOBAL_TX_MAP.remove(&key);
         }
         
-        // Log map size periodically or if large cleanup occurred
-        if GLOBAL_TX_MAP.len() > 0 || removed_count > 0 {
-            println!("[Purge] GLOBAL_TX_MAP size: {} (removed {} entries)", GLOBAL_TX_MAP.len(), removed_count);
-        }
-        
-        // Emergency cleanup if map is too large
-        if GLOBAL_TX_MAP.len() > 1000 {
-            let now = chrono::Utc::now();
-            println!("[{}] - [PURGE] EMERGENCY: Map too large ({}), clearing all entries", 
-                now.format("%Y-%m-%d %H:%M:%S%.3f"), 
-                GLOBAL_TX_MAP.len()
-            );
+        // OPTIMIZATION: Emergency cleanup if map gets too large
+        if GLOBAL_TX_MAP.len() > 800 { // Reduced from 1000 to 800
+            println!("[ARPC] WARNING: Transaction map too large ({} entries), clearing...", GLOBAL_TX_MAP.len());
             GLOBAL_TX_MAP.clear();
+        }
+        
+        // OPTIMIZATION: Log cleanup stats periodically
+        if GLOBAL_TX_MAP.len() > 100 {
+            println!("[ARPC] Transaction map cleanup: {} entries remaining", GLOBAL_TX_MAP.len());
         }
     }
 }
 
 pub fn setup_arpc_crossbeam_worker() {
-    let (tx, rx) = unbounded::<ParsedArpcTrade>();
+    // Use bounded channel instead of unbounded to prevent memory leaks
+    let (tx, rx) = crossbeam::channel::bounded::<ParsedArpcTrade>(1000);
     ARPC_PARSED_SENDER.set(tx).unwrap();
     
     // Start the purging task in a separate thread
@@ -245,16 +261,13 @@ pub fn setup_arpc_crossbeam_worker() {
                 }
             }
         
-        // Set critical real-time priority for processing (highest priority)
-        if let Err(e) = set_realtime_priority(RealtimePriority::Critical) {
-            eprintln!("[arpc worker {}] Failed to set real-time priority: {}", worker_id, e);
-        }
+            // Set critical real-time priority for processing (highest priority)
+            if let Err(e) = set_realtime_priority(RealtimePriority::Critical) {
+                eprintln!("[arpc worker {}] Failed to set real-time priority: {}", worker_id, e);
+            }
         //initial static parameter loads
         let config = GLOBAL_CONFIG.get().expect("Config not initialized");
         let buy_sol_lamports = (config.buy_sol * 1_000_000_000.0) as u64;
-
-        let mut consecutive_errors = 0;
-        const MAX_CONSECUTIVE_ERRORS: usize = 10;
 
         while let Ok(parsed) = rx_clone.recv() {
             WORKER_MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
@@ -266,7 +279,6 @@ pub fn setup_arpc_crossbeam_worker() {
                 .unwrap_or_else(|| "<no_sig>".to_string());
             
             let now = Utc::now();
-            #[cfg(feature = "verbose_logging")]
             println!("[{}] - [WORKER-{}] Processing message for sig: {} (total received: {})", 
                 now.format("%Y-%m-%d %H:%M:%S%.3f"), 
                 worker_id,
@@ -276,11 +288,11 @@ pub fn setup_arpc_crossbeam_worker() {
             let mut send_tx = false;
             let mut buy_instruction = default_instruction();
             let mut mint = Pubkey::default();
+            let mut target_token_buy = 0;
             let mut ray_launch_accounts = RayLaunchAccounts::default();
             let mut pump_swap_accounts = PumpAmmAccounts::default();
             let mut pump_fun_accounts = PumpFunAccounts::default();
             let mut tx_with_pubkey: Option<TxWithPubkey> = None;
-            let mut target_token_buy = 0;
             let mut raydium_cpmm_accounts = RayCpmmSwapAccounts::default();
 
             let parse_start = Instant::now();
@@ -292,6 +304,8 @@ pub fn setup_arpc_crossbeam_worker() {
                 
                 let program_id_index = instr.program_id_index as usize;
                 let data = &instr.data;
+                #[cfg(feature = "verbose_logging")]
+                println!("program_id: {:?}, instr-data: {:?}, ", bs58::encode(parsed.account_keys.get(program_id_index).unwrap()).into_string(), instr.data);
 
                 let account_lookup_start = Instant::now();
                 if let Some(account_inst_bytes) = parsed.account_keys.get(program_id_index) {
@@ -324,7 +338,6 @@ pub fn setup_arpc_crossbeam_worker() {
                                         config.buy_slippage_bps,
                                     );
                                     let raydium_time = raydium_start.elapsed();
-                                    #[cfg(feature = "verbose_logging")]
                                     println!("[PROFILE][{}] Raydium launchpad processing: {:.2?}", sig_str, raydium_time);
                                     send_tx = true;
                                     let mut tx = TxWithPubkey::default();
@@ -345,7 +358,6 @@ pub fn setup_arpc_crossbeam_worker() {
                                     config.buy_slippage_bps,
                                 );
                                 let axiom_swap_time = axiom_swap_start.elapsed();
-                                #[cfg(feature = "verbose_logging")]
                                 println!("[PROFILE][{}] Axiom pump swap processing: {:.2?}", sig_str, axiom_swap_time);
                                 send_tx = true;
                                 let mut tx = TxWithPubkey::default();
@@ -365,7 +377,6 @@ pub fn setup_arpc_crossbeam_worker() {
                                     config.buy_slippage_bps,
                                 );
                                 let axiom_fun_time = axiom_fun_start.elapsed();
-                                #[cfg(feature = "verbose_logging")]
                                 println!("[PROFILE][{}] Axiom pump fun processing: {:.2?}", sig_str, axiom_fun_time);
                                 send_tx = true;
                                 let mut tx = TxWithPubkey::default();
@@ -384,9 +395,8 @@ pub fn setup_arpc_crossbeam_worker() {
                                     buy_sol_lamports,
                                     config.buy_slippage_bps,
                                 );
-                                let raydium_cpmm_time = raydium_cpmm_start.elapsed();
-                                #[cfg(feature = "verbose_logging")]
-                                println!("[PROFILE][{}] Raydium CPMM processing: {:.2?}", sig_str, raydium_cpmm_time);
+                                                                    let raydium_cpmm_time = raydium_cpmm_start.elapsed();
+                                    println!("[PROFILE][{}] Raydium CPMM processing: {:.2?}", sig_str, raydium_cpmm_time);
                                 if mint != Pubkey::default() { //buy tx
                                     send_tx = true;
                                     let mut tx = TxWithPubkey::default();
@@ -556,6 +566,8 @@ pub fn setup_arpc_crossbeam_worker() {
     });
     }
 }
+
+
 
 pub fn send_parsed_arpc_trade(parsed: ParsedArpcTrade) {
     if let Some(sender) = ARPC_PARSED_SENDER.get() {

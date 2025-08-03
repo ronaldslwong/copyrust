@@ -5,8 +5,10 @@ use std::fs;
 pub static GLOBAL_CONFIG: OnceCell<Config> = OnceCell::new();
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
-    #[serde(rename = "grpcEndpoint")]
-    pub grpc_endpoint: String,
+    #[serde(rename = "grpcEndpoint1")]
+    pub grpc_endpoint1: String,
+    #[serde(rename = "grpcEndpoint2")]
+    pub grpc_endpoint2: String,
     #[serde(rename = "arpcEndpoint")]
     pub arpc_endpoint: String,
     #[serde(rename = "rpcEndpoint")]
@@ -138,6 +140,15 @@ pub struct Config {
     pub astralane_buy_tip: f64,
     #[serde(rename = "astralane_sell_tip")]
     pub astralane_sell_tip: f64,
+    // Temporal configuration
+    #[serde(rename = "temporal_url")]
+    pub temporal_url: String,
+    #[serde(rename = "temporal_cu_price")]
+    pub temporal_cu_price: u64,
+    #[serde(rename = "temporal_buy_tip")]
+    pub temporal_buy_tip: f64,
+    #[serde(rename = "temporal_sell_tip")]
+    pub temporal_sell_tip: f64,
 }
 
 pub fn load_config() -> Config {
