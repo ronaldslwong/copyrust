@@ -565,8 +565,9 @@ pub fn setup_crossbeam_worker() {
                             let slot = parsed.slot.unwrap();
                             let sig_bytes_clone = sig_bytes.clone();
                             
-                            // Update the transaction info immediately (non-blocking)
+                            // Update the transaction info immediately (non-blocking) - set send_slot agnostic to which vendor wins
                             tx_with_pubkey.send_time = Instant::now();
+                            tx_with_pubkey.send_slot = slot; // Set send_slot immediately when we start sending
                             
                             let buy_send_start = Instant::now();
                             ASYNC_RUNTIME.spawn(async move {
@@ -586,14 +587,14 @@ pub fn setup_crossbeam_worker() {
                                             TRITON_TRANSACTIONS_SENT.load(Ordering::Relaxed)
                                         );
                                         
-                                        // Update the transaction info in the map (this is safe since we're not blocking)
+                                        // Update only the signature in the map (send_slot already set above)
                                         if let Some(mut tx_with_pubkey) = GLOBAL_TX_MAP.get_mut(&sig_bytes_clone) {
                                             tx_with_pubkey.send_sig = sig.clone();
-                                            tx_with_pubkey.send_slot = slot;
+                                            // send_slot is already set above, so we don't need to set it again
                                             #[cfg(feature = "verbose_logging")]
                                             {
                                                 let now = Utc::now();
-                                                println!("[{}] - [TRITON] Saved sig: {} to GLOBAL_TX_MAP", Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig);
+                                                println!("[{}] - [TRITON] Saved sig: {} to GLOBAL_TX_MAP (send_slot already set)", Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), sig);
                                             }
                                         }
                                     }

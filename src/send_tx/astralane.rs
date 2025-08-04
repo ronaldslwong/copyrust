@@ -1,7 +1,7 @@
 use crate::init::wallet_loader::{get_wallet_keypair, get_nonce_account};
+use crate::init::tip_stream::get_tip_percentile;
 use base64::{engine::general_purpose, Engine as _};
-use once_cell::sync::Lazy;
-use reqwest::Client;
+use isahc::{HttpClient, prelude::*};
 use rand::seq::SliceRandom;
 use solana_sdk::{
     pubkey::Pubkey,
@@ -15,8 +15,9 @@ use rand::Rng;
 use solana_sdk::compute_budget;
 use std::str::FromStr;
 use std::time::Instant;
-use std::error::Error;
+
 use chrono::Utc;
+use std::sync::OnceLock;
 
 // Astralane tip accounts as specified in the documentation
 static ASTRALANE_TIP_ACCOUNTS: &[&str] = &[
@@ -26,17 +27,19 @@ static ASTRALANE_TIP_ACCOUNTS: &[&str] = &[
     "astraRVUuTHjpwEVvNBeQEgwYx9w9CFyfxjYoobCZhL",
 ];
 
-// Global HTTP client with connection pooling for optimal performance
-static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
-    Client::builder()
-        .pool_max_idle_per_host(50) // Keep up to 50 idle connections per host
-        .pool_idle_timeout(std::time::Duration::from_secs(120)) // Keep connections alive for 2 minutes
-        .tcp_keepalive(Some(std::time::Duration::from_secs(30))) // Enable TCP keep-alive
-        .timeout(std::time::Duration::from_secs(3)) // 3 second timeout for larger transactions
-        .connect_timeout(std::time::Duration::from_millis(500)) // 500ms connect timeout
-        .build()
-        .expect("Failed to create HTTP client")
-});
+// Optimized isahc client with TCP_NODELAY and persistent connections
+static ISAHC_CLIENT: OnceLock<HttpClient> = OnceLock::new();
+
+fn get_isahc_client() -> HttpClient {
+    ISAHC_CLIENT.get_or_init(|| {
+        HttpClient::builder()
+            .max_connections_per_host(50) // Allow up to 50 connections per host
+            .timeout(std::time::Duration::from_secs(3)) // 3 second timeout
+            .connect_timeout(std::time::Duration::from_millis(500)) // 500ms connect timeout
+            .build()
+            .expect("Failed to create isahc client")
+    }).clone()
+}
 
 /// Create a system transfer instruction for Astralane tips
 pub fn astralane_tip(tip: u64, from_pubkey: &Pubkey) -> Instruction {
@@ -133,14 +136,14 @@ pub fn create_instruction_astralane(
     result
 }
 
-/// Send a signed Solana transaction via Astralane HTTP API with optimizations
+/// Send a signed Solana transaction via Astralane HTTP API with isahc optimizations
 /// This implements the sendTransaction method as described in the Astralane documentation
 pub async fn send_tx_astralane(tx: &Transaction) -> Result<String, Box<dyn std::error::Error>> {
     let total_start = Instant::now();
     let now = Utc::now();
     
     #[cfg(feature = "verbose_logging")]
-    println!("[{}] - [ASTRALANE_PROFILE] 🚀 Starting Astralane send transaction", 
+    println!("[{}] - [ASTRALANE_PROFILE] 🚀 Starting Astralane send transaction (ISAHC)", 
         now.format("%Y-%m-%d %H:%M:%S%.3f"));
     
     let config = GLOBAL_CONFIG.get().expect("Config not initialized");
@@ -172,37 +175,27 @@ pub async fn send_tx_astralane(tx: &Transaction) -> Result<String, Box<dyn std::
     println!("[{}] - [ASTRALANE_PROFILE] 🔤 Base64 encoding: {:.2?} (encoded size: {} chars)", 
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), encode_time, tx_b64.len());
     
-    // Step 3: Build request (measure request building time)
+    // Step 3: Pre-allocate JSON payload string for better performance
     let request_start = Instant::now();
-    // Use the sendTransaction method as specified in Astralane documentation
-    let request_body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "sendTransaction",
-        "params": [
-            tx_b64,
-            {
-                "skipPreflight": true,
-                "encoding": "base64"
-            }
-        ]
-    });
+    let request_json = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":["{}",{{"skipPreflight":true,"encoding":"base64"}}]}}"#,
+        tx_b64
+    );
     let request_time = request_start.elapsed();
     
     #[cfg(feature = "verbose_logging")]
-    println!("[{}] - [ASTRALANE_PROFILE] 📝 Request building: {:.2?}", 
-        Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), request_time);
+    println!("[{}] - [ASTRALANE_PROFILE] 📝 Request building: {:.2?} (size: {} bytes)", 
+        Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), request_time, request_json.len());
     
-    // Step 4: Network call (measure network latency)
+    // Step 4: Network call with isahc (measure network latency)
     let network_start = Instant::now();
     
-    // Build the request URL and log it for debugging
     #[cfg(feature = "verbose_logging")]
     println!("[ASTRALANE_DEBUG] 🌐 Making POST request to: {}", config.astralane_url);
     #[cfg(feature = "verbose_logging")]
-    println!("[ASTRALANE_DEBUG] 📦 Request body size: {} bytes", serde_json::to_string(&request_body).unwrap_or_default().len());
+    println!("[ASTRALANE_DEBUG] 📦 Request body size: {} bytes", request_json.len());
     #[cfg(feature = "verbose_logging")]
-    println!("[ASTRALANE_DEBUG] 🔧 Using HTTP/1.1 with TCP keep-alive for optimal performance");
+    println!("[ASTRALANE_DEBUG] 🔧 Using ISAHC with optimized connection pooling");
     
     // Retry mechanism with exponential backoff
     let max_retries = 3;
@@ -214,11 +207,9 @@ pub async fn send_tx_astralane(tx: &Transaction) -> Result<String, Box<dyn std::
         #[cfg(feature = "verbose_logging")]
         println!("[ASTRALANE_DEBUG] 🔄 Attempt {}/{}", attempt, max_retries);
         
-        response_result = Some(HTTP_CLIENT
-            .post(&config.astralane_url)
-            .header("Content-Type", "application/json")
-            .json(&request_body)
-            .send()
+        // Use our persistent client to keep connections warm
+        response_result = Some(get_isahc_client()
+            .post_async(&config.astralane_url, request_json.clone())
             .await);
         
         match &response_result {
@@ -258,7 +249,7 @@ pub async fn send_tx_astralane(tx: &Transaction) -> Result<String, Box<dyn std::
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), network_time);
     
     // Handle network errors with detailed logging
-    let response = match response_result {
+    let mut response = match response_result {
         Ok(resp) => {
             #[cfg(feature = "verbose_logging")]
             println!("[ASTRALANE_DEBUG] ✅ Request sent successfully");
@@ -266,8 +257,6 @@ pub async fn send_tx_astralane(tx: &Transaction) -> Result<String, Box<dyn std::
         },
         Err(e) => {
             eprintln!("[ASTRALANE_DEBUG] ❌ Network request failed: {}", e);
-            eprintln!("[ASTRALANE_DEBUG] 🔍 Error type: {:?}", e.status());
-            eprintln!("[ASTRALANE_DEBUG] 🔍 Error source: {:?}", e.source());
             return Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::Other, 
                 format!("Network request failed: {}", e)
@@ -275,19 +264,17 @@ pub async fn send_tx_astralane(tx: &Transaction) -> Result<String, Box<dyn std::
         }
     };
     
-    // Step 5: Check response status with detailed logging
+    // Step 5: Check response status
     let status = response.status();
     #[cfg(feature = "verbose_logging")]
     println!("[ASTRALANE_DEBUG] 📊 Response status: {} ({})", status, status.as_u16());
-    #[cfg(feature = "verbose_logging")]
-    println!("[ASTRALANE_DEBUG] 📋 Response headers: {:?}", response.headers());
     
     if !status.is_success() {
         let error_text = match response.text().await {
             Ok(text) => {
                 #[cfg(feature = "verbose_logging")]
                 println!("[ASTRALANE_DEBUG] ❌ Error response body: {}", text);
-                text
+                text.to_string()
             },
             Err(e) => {
                 #[cfg(feature = "verbose_logging")]
@@ -303,51 +290,22 @@ pub async fn send_tx_astralane(tx: &Transaction) -> Result<String, Box<dyn std::
         )));
     }
     
-    // Step 6: Parse response (measure response processing time)
+    // Step 6: Manual JSON extraction for better performance
     let response_start = Instant::now();
-    let response_json: serde_json::Value = response.json().await?;
+    let response_text = response.text().await?.to_string();
     let response_time = response_start.elapsed();
+    
+    #[cfg(feature = "verbose_logging")]
+    println!("[{}] - [ASTRALANE_PROFILE] 📨 Response processing: {:.2?} (size: {} bytes)", 
+        Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), response_time, response_text.len());
     
     // Debug: Print the actual response structure
     #[cfg(feature = "verbose_logging")]
-    println!("[ASTRALANE_DEBUG] 📨 Raw response JSON: {}", serde_json::to_string_pretty(&response_json).unwrap_or_default());
+    println!("[ASTRALANE_DEBUG] 📨 Raw response: {}", response_text);
     
-    #[cfg(feature = "verbose_logging")]
-    println!("[{}] - [ASTRALANE_PROFILE] 📨 Response processing: {:.2?}", 
-        Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), response_time);
-    
-    // Step 7: Extract signature from response
+    // Step 7: Manual JSON parsing for signature extraction (avoid serde_json overhead)
     let extract_start = Instant::now();
-    let signature = if let Some(result) = response_json.get("result") {
-        #[cfg(feature = "verbose_logging")]
-        println!("[ASTRALANE_DEBUG] 📋 Found 'result' field in response");
-        if let Some(sig) = result.as_str() {
-            #[cfg(feature = "verbose_logging")]
-            println!("[ASTRALANE_DEBUG] ✅ Extracted signature: {}", sig);
-            sig.to_string()
-        } else {
-            #[cfg(feature = "verbose_logging")]
-            println!("[ASTRALANE_DEBUG] ❌ Result is not a string: {:?}", result);
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other, 
-                "Invalid result format in response"
-            )));
-        }
-    } else if let Some(error) = response_json.get("error") {
-        #[cfg(feature = "verbose_logging")]
-        println!("[ASTRALANE_DEBUG] ❌ Error in response: {:?}", error);
-        return Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::Other, 
-            format!("Astralane error: {:?}", error)
-        )));
-    } else {
-        #[cfg(feature = "verbose_logging")]
-        println!("[ASTRALANE_DEBUG] ❌ No 'result' or 'error' field in response: {:?}", response_json);
-        return Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::Other, 
-            "No result in response"
-        )));
-    };
+    let signature = extract_signature_manual(&response_text)?;
     let extract_time = extract_start.elapsed();
     
     #[cfg(feature = "verbose_logging")]
@@ -376,3 +334,35 @@ pub async fn send_tx_astralane(tx: &Transaction) -> Result<String, Box<dyn std::
     
     Ok(signature)
 }
+
+/// Manual signature extraction for better performance (avoid serde_json overhead)
+fn extract_signature_manual(response: &str) -> Result<String, Box<dyn std::error::Error>> {
+    // Look for "result" field in the JSON response
+    if let Some(result_start) = response.find(r#""result":"#) {
+        let signature_start = result_start + 10; // Length of "result":
+        if let Some(signature_end) = response[signature_start..].find('"') {
+            let signature = &response[signature_start..signature_start + signature_end];
+            #[cfg(feature = "verbose_logging")]
+            println!("[ASTRALANE_DEBUG] ✅ Manually extracted signature: {}", signature);
+            return Ok(signature.to_string());
+        }
+    }
+    
+    // Check for error field
+    if response.contains(r#""error":"#) {
+        #[cfg(feature = "verbose_logging")]
+        println!("[ASTRALANE_DEBUG] ❌ Error in response: {}", response);
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other, 
+            format!("Astralane error in response: {}", response)
+        )));
+    }
+    
+    #[cfg(feature = "verbose_logging")]
+    println!("[ASTRALANE_DEBUG] ❌ No signature found in response: {}", response);
+    Err(Box::new(std::io::Error::new(
+        std::io::ErrorKind::Other, 
+        "No signature found in response"
+    )))
+}
+

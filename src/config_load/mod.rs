@@ -21,6 +21,8 @@ pub struct Config {
     pub zeroslot_buy_tip: f64,
     #[serde(rename = "zeroslot_sell_tip")]
     pub zeroslot_sell_tip: f64,
+    #[serde(rename = "zeroslot_dynamic_buy_tip")]
+    pub zeroslot_dynamic_buy_tip: bool,
     #[serde(rename = "cuPrice0Slot")]
     pub cu_price0_slot: u64,
     #[serde(rename = "jitoUrl")]
@@ -107,6 +109,8 @@ pub struct Config {
     pub nextblock_buy_tip: f64,
     #[serde(rename = "nextblock_sell_tip")]
     pub nextblock_sell_tip: f64,
+    #[serde(rename = "nextblock_dynamic_buy_tip")]
+    pub nextblock_dynamic_buy_tip: bool,
     #[serde(rename = "waitTime")]
     pub wait_time: f64,
     // BlockRazor configuration
@@ -120,6 +124,8 @@ pub struct Config {
     pub blockrazor_buy_tip: f64,
     #[serde(rename = "blockrazor_sell_tip")]
     pub blockrazor_sell_tip: f64,
+    #[serde(rename = "blockrazor_dynamic_buy_tip")]
+    pub blockrazor_dynamic_buy_tip: bool,
     // Flashblock configuration
     #[serde(rename = "flashblock_url")]
     pub flashblock_url: String,
@@ -131,6 +137,8 @@ pub struct Config {
     pub flashblock_buy_tip: f64,
     #[serde(rename = "flashblock_sell_tip")]
     pub flashblock_sell_tip: f64,
+    #[serde(rename = "flashblock_dynamic_buy_tip")]
+    pub flashblock_dynamic_buy_tip: bool,
     // Astralane configuration
     #[serde(rename = "astralane_url")]
     pub astralane_url: String,
@@ -140,6 +148,8 @@ pub struct Config {
     pub astralane_buy_tip: f64,
     #[serde(rename = "astralane_sell_tip")]
     pub astralane_sell_tip: f64,
+    #[serde(rename = "astralane_dynamic_buy_tip")]
+    pub astralane_dynamic_buy_tip: bool,
     // Temporal configuration
     #[serde(rename = "temporal_url")]
     pub temporal_url: String,
@@ -149,6 +159,12 @@ pub struct Config {
     pub temporal_buy_tip: f64,
     #[serde(rename = "temporal_sell_tip")]
     pub temporal_sell_tip: f64,
+    #[serde(rename = "temporal_dynamic_buy_tip")]
+    pub temporal_dynamic_buy_tip: bool,
+    #[serde(rename = "tip_stream")]
+    pub tip_stream: String,
+    #[serde(rename = "dynamic_tip_percentile")]
+    pub dynamic_tip_percentile: u8,
 }
 
 pub fn load_config() -> Config {

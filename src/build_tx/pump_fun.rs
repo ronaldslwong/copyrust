@@ -174,7 +174,7 @@ pub fn build_pump_fun_instruction(
             AccountMeta::new_readonly(accounts.mint_authority, false),
             AccountMeta::new_readonly(accounts.pump_fun_program, false),
             AccountMeta::new(accounts.global_volume_accumulator, false),
-            AccountMeta::new_readonly(accounts.user_volume_accumulator, false),
+            AccountMeta::new(accounts.user_volume_accumulator, false),
         ];
     } else {
         metas = vec![
@@ -191,7 +191,7 @@ pub fn build_pump_fun_instruction(
             AccountMeta::new_readonly(accounts.mint_authority, false),
             AccountMeta::new_readonly(accounts.pump_fun_program, false),
             AccountMeta::new(accounts.global_volume_accumulator, false),
-            AccountMeta::new_readonly(accounts.user_volume_accumulator, false),
+            AccountMeta::new(accounts.user_volume_accumulator, false),
         ];
     }
     Instruction {

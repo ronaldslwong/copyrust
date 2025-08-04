@@ -25,6 +25,7 @@ use crate::send_tx::block_razor::create_instruction_blockrazor;
 use crate::send_tx::flashblock::create_instruction_flashblock;
 use crate::send_tx::astralane::create_instruction_astralane;
 use crate::send_tx::temporal::create_instruction_temporal;
+use crate::init::tip_stream::get_tip_percentile;
 
 // Thread-local runtime storage for better concurrency
 use std::cell::RefCell;
@@ -677,7 +678,11 @@ pub fn build_vendor_specific_transactions_parallel(
         }),
         ("zeroslot", VendorConfig {
             name: "zeroslot", 
-            tip_amount: (config.zeroslot_buy_tip * 1_000_000_000.0) as u64,
+            tip_amount: if config.zeroslot_dynamic_buy_tip {
+                (get_tip_percentile(config.dynamic_tip_percentile).unwrap_or(config.zeroslot_buy_tip) * 1_000_000_000.0) as u64
+            } else {
+                (config.zeroslot_buy_tip * 1_000_000_000.0) as u64
+            },
             cu_price: config.cu_price0_slot,
             use_jito: false,
         }),
@@ -689,31 +694,51 @@ pub fn build_vendor_specific_transactions_parallel(
         // }),
         ("nextblock", VendorConfig {
             name: "nextblock",
-            tip_amount: (config.nextblock_buy_tip * 1_000_000_000.0) as u64, // Using same tip for now
+            tip_amount: if config.nextblock_dynamic_buy_tip {
+                (get_tip_percentile(config.dynamic_tip_percentile).unwrap_or(config.nextblock_buy_tip) * 1_000_000_000.0) as u64
+            } else {
+                (config.nextblock_buy_tip * 1_000_000_000.0) as u64
+            },
             cu_price: config.nextblock_cu_price,
             use_jito: false,
         }),
         ("blockrazor", VendorConfig {
             name: "blockrazor",
-            tip_amount: (config.blockrazor_buy_tip * 1_000_000_000.0) as u64, // Using same tip for now
+            tip_amount: if config.blockrazor_dynamic_buy_tip {
+                (get_tip_percentile(config.dynamic_tip_percentile).unwrap_or(config.blockrazor_buy_tip) * 1_000_000_000.0) as u64
+            } else {
+                (config.blockrazor_buy_tip * 1_000_000_000.0) as u64
+            },
             cu_price: config.blockrazor_cu_price,
             use_jito: false,
         }),
         ("flashblock", VendorConfig {
             name: "flashblock",
-            tip_amount: (config.flashblock_buy_tip * 1_000_000_000.0) as u64,
+            tip_amount: if config.flashblock_dynamic_buy_tip {
+                (get_tip_percentile(config.dynamic_tip_percentile).unwrap_or(config.flashblock_buy_tip) * 1_000_000_000.0) as u64
+            } else {
+                (config.flashblock_buy_tip * 1_000_000_000.0) as u64
+            },
             cu_price: config.flashblock_cu_price,
             use_jito: false,
         }),
         ("astralane", VendorConfig {
             name: "astralane",
-            tip_amount: (config.astralane_buy_tip * 1_000_000_000.0) as u64,
+            tip_amount: if config.astralane_dynamic_buy_tip {
+                (get_tip_percentile(config.dynamic_tip_percentile).unwrap_or(config.astralane_buy_tip) * 1_000_000_000.0) as u64
+            } else {
+                (config.astralane_buy_tip * 1_000_000_000.0) as u64
+            },
             cu_price: config.astralane_cu_price,
             use_jito: false,
         }),
         ("temporal", VendorConfig {
             name: "temporal",
-            tip_amount: (config.temporal_buy_tip * 1_000_000_000.0) as u64,
+            tip_amount: if config.temporal_dynamic_buy_tip {
+                (get_tip_percentile(config.dynamic_tip_percentile).unwrap_or(config.temporal_buy_tip) * 1_000_000_000.0) as u64
+            } else {
+                (config.temporal_buy_tip * 1_000_000_000.0) as u64
+            },
             cu_price: config.temporal_cu_price,
             use_jito: false,
         }),

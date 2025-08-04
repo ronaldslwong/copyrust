@@ -85,6 +85,12 @@ pub async fn initialize() -> (Config, Vec<DexPairData>) {
     // Flashblock HTTP client is initialized lazily with connection pooling
     println!("Flashblock HTTP client ready (lazy initialization)");
 
+    // Initialize tip stream
+    match crate::init::tip_stream::initialize_tip_stream().await {
+        Ok(_) => println!("Tip stream initialized successfully"),
+        Err(e) => eprintln!("Failed to initialize tip stream: {}", e),
+    }
+
     if !config.birdeye_api.is_empty() {
         match load_birdeye_token_addresses(&config.birdeye_api, config.bird_eye_num_token as usize)
             .await

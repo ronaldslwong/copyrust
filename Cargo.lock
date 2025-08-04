@@ -1190,7 +1190,7 @@ checksum = "7c74b8349d32d297c9134b8c88677813a227df8f779daa29bfc29c183fe3dca6"
 
 [[package]]
 name = "copy_rust"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1207,6 +1207,8 @@ dependencies = [
  "ed25519-zebra",
  "futures",
  "hex",
+ "hyper 1.6.0",
+ "isahc",
  "lazy_static",
  "libc",
  "log",
@@ -1237,9 +1239,11 @@ dependencies = [
  "thread-priority",
  "tokio",
  "tokio-stream",
+ "tokio-tungstenite 0.21.0",
  "toml 0.8.23",
  "tonic",
  "tonic-build",
+ "url",
 ]
 
 [[package]]
@@ -2715,6 +2719,8 @@ dependencies = [
  "mime",
  "once_cell",
  "polling",
+ "serde",
+ "serde_json",
  "slab",
  "sluice",
  "tracing",
@@ -5826,8 +5832,8 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "tokio-stream",
- "tokio-tungstenite",
- "tungstenite",
+ "tokio-tungstenite 0.20.1",
+ "tungstenite 0.20.1",
  "url",
 ]
 
@@ -7804,8 +7810,22 @@ dependencies = [
  "rustls 0.21.12",
  "tokio",
  "tokio-rustls 0.24.1",
- "tungstenite",
+ "tungstenite 0.20.1",
  "webpki-roots 0.25.4",
+]
+
+[[package]]
+name = "tokio-tungstenite"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c83b561d025642014097b66e6c1bb422783339e0909e4429cde4749d1990bc38"
+dependencies = [
+ "futures-util",
+ "log",
+ "native-tls",
+ "tokio",
+ "tokio-native-tls",
+ "tungstenite 0.21.0",
 ]
 
 [[package]]
@@ -8033,6 +8053,26 @@ dependencies = [
  "url",
  "utf-8",
  "webpki-roots 0.24.0",
+]
+
+[[package]]
+name = "tungstenite"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ef1a641ea34f399a848dea702823bbecfb4c486f911735368f1f137cb8257e1"
+dependencies = [
+ "byteorder",
+ "bytes",
+ "data-encoding",
+ "http 1.3.1",
+ "httparse",
+ "log",
+ "native-tls",
+ "rand 0.8.5",
+ "sha1",
+ "thiserror 1.0.69",
+ "url",
+ "utf-8",
 ]
 
 [[package]]
