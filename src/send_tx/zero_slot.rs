@@ -202,13 +202,48 @@ pub async fn send_tx_zeroslot(tx: &Transaction) -> Result<String, Box<dyn std::e
     // Parse the response more efficiently
     let response_json: serde_json::Value = response.json().await?;
     
+    // DEBUG: Log the full response for zeroslot
+    println!("[{}] - [ZEROSLOT] 🔍 DEBUG - Full response: {}", 
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), response_json);
+    
     if let Some(result) = response_json.get("result") {
-        return Ok(result.to_string());
+        println!("[{}] - [ZEROSLOT] 🔍 DEBUG - Found result field: {}", 
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), result);
+        
+        let signature = result.to_string();
+        // Remove quotes if they exist
+        let signature = signature.trim_matches('"');
+        
+        println!("[{}] - [ZEROSLOT] 🔍 DEBUG - Extracted signature: '{}' (length: {})", 
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), signature, signature.len());
+        
+        // Validate the signature format (should be base58 encoded, typically 88 characters)
+        if signature.len() != 88 {
+            println!("[{}] - [ZEROSLOT] ⚠️  WARNING - Signature length is {} chars, expected 88", 
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), signature.len());
+        }
+        
+        // Test if we can decode it to bytes
+        match bs58::decode(signature).into_vec() {
+            Ok(bytes) => {
+                println!("[{}] - [ZEROSLOT] ✅ DEBUG - Signature successfully decoded to {} bytes", 
+                    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), bytes.len());
+            }
+            Err(e) => {
+                eprintln!("[{}] - [ZEROSLOT] ❌ ERROR - Failed to decode signature to bytes: {:?}", 
+                    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), e);
+            }
+        }
+        
+        return Ok(signature.to_string());
     } else if let Some(error) = response_json.get("error") {
-        eprintln!("Failed to send transaction: {}", error);
+        eprintln!("[{}] - [ZEROSLOT] ❌ ERROR - Failed to send transaction: {}", 
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), error);
         return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "Failed to send transaction")));
     }
 
     // If neither result nor error is present, return a generic error
+    eprintln!("[{}] - [ZEROSLOT] ❌ ERROR - Invalid response structure: {}", 
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"), response_json);
     Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "Invalid response from sendTransaction")))
 }

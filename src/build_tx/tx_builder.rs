@@ -121,11 +121,19 @@ fn get_cached_blockhash_sync() -> solana_sdk::hash::Hash {
 /// Get nonce blockhash from the nonce account (no fallback)
 fn get_nonce_blockhash_sync(rpc_client: &RpcClient, nonce_account: &Pubkey) -> Result<solana_sdk::hash::Hash, Box<dyn std::error::Error + Send + Sync>> {
     println!("[TX_BUILDER] Nonce account: {}", nonce_account.to_string());
+    
+    // PERFORMANCE: Time the RPC call specifically
+    let rpc_start = std::time::Instant::now();
     // Get the nonce account data
     let account_data = rpc_client.get_account_data(nonce_account)?;
+    let rpc_time = rpc_start.elapsed();
+    println!("[TX_BUILDER] PERFORMANCE - RPC get_account_data took: {:.3?} ({}ns)", rpc_time, rpc_time.as_nanos());
 
     // Parse the nonce account to get the current nonce
+    let parse_start = std::time::Instant::now();
     let nonce_state: Versions = bincode::deserialize(&account_data)?;
+    let parse_time = parse_start.elapsed();
+    println!("[TX_BUILDER] PERFORMANCE - Nonce account parsing took: {:.3?} ({}ns)", parse_time, parse_time.as_nanos());
     
     // Get the nonce blockhash
     let nonce_blockhash = match nonce_state {
@@ -150,10 +158,41 @@ fn get_nonce_blockhash_sync(rpc_client: &RpcClient, nonce_account: &Pubkey) -> R
 
 /// Get the next nonce account and its blockhash atomically (prevents race conditions)
 fn get_next_nonce_account_and_blockhash(rpc_client: &RpcClient) -> Result<(&'static Keypair, &'static Pubkey, solana_sdk::hash::Hash), Box<dyn std::error::Error + Send + Sync>> {
-    use crate::init::wallet_loader::get_next_nonce_account_atomic;
+    use crate::init::wallet_loader::{get_next_nonce_account_atomic, get_nonce_account_index, get_cached_nonce_blockhash};
     
+    let total_start = std::time::Instant::now();
+    
+    // Time the atomic nonce account retrieval
+    let nonce_start = std::time::Instant::now();
     let (keypair, pubkey) = get_next_nonce_account_atomic();
-    let blockhash = get_nonce_blockhash_sync(rpc_client, pubkey)?;
+    let nonce_time = nonce_start.elapsed();
+    
+    // OPTIMIZATION: Use cached blockhash instead of RPC call
+    let blockhash_start = std::time::Instant::now();
+    let blockhash = if let Some(nonce_index) = get_nonce_account_index(pubkey) {
+        if let Some(cached_blockhash) = get_cached_nonce_blockhash(nonce_index) {
+            // Use cached blockhash (fast path - ~0.01ms)
+            println!("[TX_BUILDER] Using cached nonce blockhash for index {}: {}", nonce_index, cached_blockhash);
+            cached_blockhash
+        } else {
+            // Fallback to RPC if cache miss (should be rare after prefetching)
+            println!("[TX_BUILDER] Cache miss for nonce index {}, falling back to RPC", nonce_index);
+            get_nonce_blockhash_sync(rpc_client, pubkey)?
+        }
+    } else {
+        // Fallback to RPC if we can't determine index (should be rare)
+        println!("[TX_BUILDER] Could not determine nonce index, falling back to RPC");
+        get_nonce_blockhash_sync(rpc_client, pubkey)?
+    };
+    let blockhash_time = blockhash_start.elapsed();
+    
+    let total_time = total_start.elapsed();
+    
+    // Log detailed timing breakdown
+    println!("[TX_BUILDER] PERFORMANCE - get_next_nonce_account_and_blockhash breakdown:");
+    println!("[TX_BUILDER] PERFORMANCE -   Atomic nonce retrieval: {:.3?} ({}ns)", nonce_time, nonce_time.as_nanos());
+    println!("[TX_BUILDER] PERFORMANCE -   Blockhash fetch (cached): {:.3?} ({}ns)", blockhash_time, blockhash_time.as_nanos());
+    println!("[TX_BUILDER] PERFORMANCE -   Total function time: {:.3?} ({}ns)", total_time, total_time.as_nanos());
     
     Ok((keypair, pubkey, blockhash))
 }
@@ -413,6 +452,7 @@ pub fn create_instruction(
     cu_limit: u32,
     mint: Pubkey,
     instructions: Vec<Instruction>,
+    token_2022: bool,
 ) -> Vec<Instruction> {
     let keypair: &'static Keypair = get_wallet_keypair();
 
@@ -423,7 +463,7 @@ pub fn create_instruction(
 
     let limit_ix = compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu_limit);
 
-    let ata_ix = create_ata(&keypair, &keypair.pubkey(), &mint);
+    let ata_ix = create_ata(&keypair, &keypair.pubkey(), &mint, token_2022);
 
     let mut result = vec![limit_ix, ata_ix];
     result.extend(instructions);
@@ -534,6 +574,7 @@ pub fn benchmark_signing_performance(
 pub fn build_optimized_transaction(
     buy_instruction: Instruction,
     mint: Pubkey,
+    token_2022: bool,
     _target_token_buy: u64,
     _sig_str: &str,
 ) -> Result<Transaction, Box<dyn std::error::Error>> {
@@ -546,6 +587,7 @@ pub fn build_optimized_transaction(
         config.cu_limit,
         mint,
         vec![buy_instruction.clone()],
+        token_2022,
     );
     
     // Add ZeroSlot tip instruction
@@ -611,6 +653,7 @@ pub fn build_optimized_transaction(
         cu_limit,
         mint,
         vec![buy_instruction.clone()],
+        token_2022,
     );
     final_buy_instruction = create_instruction_zeroslot(
         final_buy_instruction, 
@@ -656,6 +699,7 @@ pub fn build_vendor_specific_transactions_parallel(
     mint: Pubkey,
     target_token_buy: u64,
     sig_str: &str,
+    token_2022: bool,
 ) -> Result<Vec<(String, Transaction)>, Box<dyn std::error::Error + Send + Sync>> {
     let build_start = Instant::now();
     let config = GLOBAL_CONFIG.get().expect("Config not initialized");
@@ -663,10 +707,10 @@ pub fn build_vendor_specific_transactions_parallel(
     
     // First, get optimized compute units (same as before)
     let cu_start = Instant::now();
-    let cu_limit = get_optimized_compute_units(&buy_instruction, mint, sig_str, rpc, config)?;
+    // let cu_limit = get_optimized_compute_units(&buy_instruction, mint, sig_str, rpc, config)?;
     let cu_time = cu_start.elapsed();
     println!("[PROFILE][{}] Compute units optimization: {:.2?}", sig_str, cu_time);
-    // let cu_limit = config.cu_limit;
+    let cu_limit = config.cu_limit;
     
     // Define vendor configurations for parallel building
     let vendor_configs = vec![
@@ -747,9 +791,17 @@ pub fn build_vendor_specific_transactions_parallel(
     // Get the same nonce account and blockhash for all vendor transactions (prevents multiple advances)
     let nonce_start = Instant::now();
     let (nonce_keypair, nonce_pubkey, nonce_blockhash) = get_next_nonce_account_and_blockhash(rpc)?;
+    
+    // NEW: Get nonce index for tracking
+    use crate::init::wallet_loader::get_nonce_account_index;
+    let nonce_index = get_nonce_account_index(nonce_pubkey);
+    
     let nonce_time = nonce_start.elapsed();
     println!("[PROFILE][{}] Nonce account setup: {:.2?}", sig_str, nonce_time);
-    println!("[TX_BUILDER] Using nonce account {} for all {} vendor transactions", nonce_pubkey, vendor_configs.len());
+    println!("[TX_BUILDER] PERFORMANCE - Nonce setup breakdown:");
+    println!("[TX_BUILDER] PERFORMANCE -   Nonce account setup: {:.3?} ({}ns)", nonce_time, nonce_time.as_nanos());
+    println!("[TX_BUILDER] Using nonce account {} (index: {:?}) for all {} vendor transactions", 
+        nonce_pubkey, nonce_index, vendor_configs.len());
     
     // Build all vendor versions in parallel using rayon
     let parallel_start = Instant::now();
@@ -763,6 +815,7 @@ pub fn build_vendor_specific_transactions_parallel(
                 cu_limit,
                 mint,
                 vec![buy_instruction.clone()],
+                token_2022,
             );
             
             // Add vendor-specific tip instructions
@@ -822,6 +875,7 @@ pub fn build_vendor_specific_transactions_parallel(
                     instructions,
                     config.tip_amount,
                     nonce_pubkey,
+                    token_2022,
                 );
             }
             // TODO: Add Jito tip instruction when implemented
@@ -861,6 +915,8 @@ pub fn build_vendor_specific_transactions_parallel(
     
     let parallel_time = parallel_start.elapsed();
     println!("[PROFILE][{}] Parallel vendor building: {:.2?}", sig_str, parallel_time);
+    println!("[TX_BUILDER] PERFORMANCE - Vendor building breakdown:");
+    println!("[TX_BUILDER] PERFORMANCE -   Parallel vendor building: {:.3?} ({}ns)", parallel_time, parallel_time.as_nanos());
     
     // Collect successful results
     let collect_start = Instant::now();
@@ -875,6 +931,7 @@ pub fn build_vendor_specific_transactions_parallel(
     }
     let collect_time = collect_start.elapsed();
     println!("[PROFILE][{}] Results collection: {:.2?}", sig_str, collect_time);
+    println!("[TX_BUILDER] PERFORMANCE - Results collection: {:.3?} ({}ns)", collect_time, collect_time.as_nanos());
     
     let total_time = build_start.elapsed();
     println!(
@@ -883,6 +940,16 @@ pub fn build_vendor_specific_transactions_parallel(
         successful_results.len(),
         total_time
     );
+    
+    // Final performance summary
+    println!("[TX_BUILDER] PERFORMANCE - Final vendor build breakdown:");
+    println!("[TX_BUILDER] PERFORMANCE -   Nonce setup: {:.3?} ({}ns) - {:.1}%", 
+        nonce_time, nonce_time.as_nanos(), (nonce_time.as_nanos() as f64 / total_time.as_nanos() as f64) * 100.0);
+    println!("[TX_BUILDER] PERFORMANCE -   Parallel building: {:.3?} ({}ns) - {:.1}%", 
+        parallel_time, parallel_time.as_nanos(), (parallel_time.as_nanos() as f64 / total_time.as_nanos() as f64) * 100.0);
+    println!("[TX_BUILDER] PERFORMANCE -   Results collection: {:.3?} ({}ns) - {:.1}%", 
+        collect_time, collect_time.as_nanos(), (collect_time.as_nanos() as f64 / total_time.as_nanos() as f64) * 100.0);
+    println!("[TX_BUILDER] PERFORMANCE -   Total vendor build: {:.3?} ({}ns)", total_time, total_time.as_nanos());
     
     Ok(successful_results)
 }
@@ -894,6 +961,7 @@ fn get_optimized_compute_units(
     sig_str: &str,
     rpc: &RpcClient,
     config: &crate::config_load::Config,
+    token_2022: bool,
 ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
     let sim_total_start = Instant::now();
     
@@ -903,6 +971,7 @@ fn get_optimized_compute_units(
         config.cu_limit,
         mint,
         vec![buy_instruction.clone()],
+        token_2022,
     );
     
     initial_instructions = create_instruction_zeroslot(
@@ -992,9 +1061,10 @@ pub async fn build_vendor_specific_transactions(
     mint: Pubkey,
     target_token_buy: u64,
     sig_str: &str,
+    token_2022: bool,
 ) -> Result<Vec<(String, Transaction)>, Box<dyn std::error::Error + Send + Sync>> {
     // Use the parallel version instead
-    build_vendor_specific_transactions_parallel(buy_instruction, mint, target_token_buy, sig_str)
+    build_vendor_specific_transactions_parallel(buy_instruction, mint, target_token_buy, sig_str, token_2022)
 }
 
 

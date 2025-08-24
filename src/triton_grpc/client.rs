@@ -1,27 +1,33 @@
 use crate::config_load::Config;
 use crate::config_load::GLOBAL_CONFIG;
 use crate::geyser::{
-    geyser_client::GeyserClient, CommitmentLevel, SubscribeRequest, SubscribeRequestFilterBlocks,
-    SubscribeRequestFilterTransactions, SubscribeUpdate, subscribe_update::UpdateOneof,
+    geyser_client::GeyserClient, subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
+    SubscribeRequestFilterBlocks, SubscribeRequestFilterTransactions, SubscribeUpdate,
 };
+use crate::init::wallet_loader::get_wallet_keypair;
 use crate::triton_grpc::parser::process_triton_message;
+use core_affinity;
+use crossbeam::channel::{bounded, Receiver, Sender};
+use solana_sdk::signature::Signer;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tonic::transport::Endpoint;
-use crate::init::wallet_loader::get_wallet_keypair;
-use solana_sdk::signature::Signer;
-use core_affinity;
-
 
 use chrono::Utc;
-use std::time::Instant;
 use once_cell::sync::Lazy;
+use std::time::Instant;
 
 // CRITICAL FIX: Worker pool to prevent unbounded tokio::spawn accumulation
 static TRITON_WORKER_POOL: Lazy<Arc<TritonWorkerPool>> = Lazy::new(|| {
     Arc::new(TritonWorkerPool::new(10)) // Limit to 10 concurrent workers
 });
+
+// Force initialization of the worker pool
+pub fn initialize_triton_worker_pool() {
+    let _pool = &*TRITON_WORKER_POOL;
+    println!("[TRITON] Worker pool initialized with 10 workers");
+}
 
 pub struct TritonWorkerPool {
     sender: crossbeam::channel::Sender<TritonTask>,
@@ -36,7 +42,7 @@ struct TritonTask {
 impl TritonWorkerPool {
     fn new(num_workers: usize) -> Self {
         let (sender, receiver) = crossbeam::channel::bounded::<TritonTask>(100); // Bounded queue
-        
+
         let mut workers = Vec::new();
         for worker_id in 0..num_workers {
             let receiver_clone = receiver.clone();
@@ -45,26 +51,44 @@ impl TritonWorkerPool {
             });
             workers.push(handle);
         }
-        
+
         Self { sender, workers }
     }
-    
+
     fn worker_loop(worker_id: usize, receiver: crossbeam::channel::Receiver<TritonTask>) {
+        println!(
+            "[TRITON-WORKER-{}] Worker started and waiting for messages",
+            worker_id
+        );
         while let Ok(task) = receiver.recv() {
             let processing_start = Instant::now();
-            
+            #[cfg(feature = "verbose_logging")]
+            {
+                println!(
+                    "[TRITON-WORKER-{}] Processing message for feed: {}",
+                    worker_id, task.feed_id
+                );
+            }
+
             // Process the message (this will be handled by the existing crossbeam worker)
             crate::triton_grpc::parser::process_triton_message(&task.message, &task.feed_id);
-            
-            let processing_time = processing_start.elapsed();
-            let now = Utc::now();
+
             #[cfg(feature = "verbose_logging")]
-            println!("[{}] - [TRITON-WORKER-{}] Processed message for feed {} (processing time: {:.2?})", 
-                now.format("%Y-%m-%d %H:%M:%S%.3f"), worker_id, task.feed_id, processing_time);
+            {
+                let processing_time = processing_start.elapsed();
+                let now = Utc::now();
+                println!("[{}] - [TRITON-WORKER-{}] Processed message for feed {} (processing time: {:.2?})", 
+                    now.format("%Y-%m-%d %H:%M:%S%.3f"), worker_id, task.feed_id, processing_time);
+            }
         }
+        println!("[TRITON-WORKER-{}] Worker loop ended", worker_id);
     }
-    
-    pub fn submit(&self, message: crate::geyser::SubscribeUpdate, feed_id: String) -> Result<(), crossbeam::channel::SendError<TritonTask>> {
+
+    pub fn submit(
+        &self,
+        message: crate::geyser::SubscribeUpdate,
+        feed_id: String,
+    ) -> Result<(), crossbeam::channel::SendError<TritonTask>> {
         self.sender.send(TritonTask { message, feed_id })
     }
 }
@@ -74,6 +98,9 @@ pub async fn subscribe_and_print_triton(
     config: Arc<Config>,
     feed_id: &str, // OPTIMIZATION: Add feed_id parameter
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // CRITICAL FIX: Initialize worker pool before starting subscription
+    initialize_triton_worker_pool();
+
     let client = Endpoint::from_shared(endpoint.to_string())?
         .connect()
         .await?;
@@ -145,9 +172,11 @@ pub async fn subscribe_and_print_triton(
             println!("[Triton] Main processing thread pinned to core 0");
         }
     }
-    
+
     // Set high real-time priority for the main processing thread (once)
-    if let Err(e) = crate::utils::rt_scheduler::set_realtime_priority(crate::utils::rt_scheduler::RealtimePriority::High) {
+    if let Err(e) = crate::utils::rt_scheduler::set_realtime_priority(
+        crate::utils::rt_scheduler::RealtimePriority::High,
+    ) {
         eprintln!("[Triton] Failed to set real-time priority: {}", e);
     }
 
@@ -165,34 +194,46 @@ pub async fn subscribe_and_print_triton(
 
         // Check for stale stream
         if last_message_time.elapsed() > Duration::from_secs(STREAM_TIMEOUT_SECONDS) {
-            println!("[Triton] WARNING: Stream appears stale (no messages for {}s), reconnecting...", 
-                STREAM_TIMEOUT_SECONDS);
+            println!(
+                "[Triton] WARNING: Stream appears stale (no messages for {}s), reconnecting...",
+                STREAM_TIMEOUT_SECONDS
+            );
             break; // Exit to trigger reconnection
         }
 
-        // Memory pressure check - force cleanup every 1000 messages
-        if message_count % 1000 == 0 {
-            // Force garbage collection and cleanup
-            std::thread::sleep(Duration::from_millis(1));
-            crate::grpc::arpc_parser::cleanup_old_signatures();
-            println!("[Triton] Memory pressure cleanup triggered after {} messages", message_count);
-        }
+        // // Memory pressure check - force cleanup every 1000 messages
+        // if message_count % 1000 == 0 {
+        //     // Force garbage collection and cleanup
+        //     std::thread::sleep(Duration::from_millis(1));
+        //     crate::grpc::arpc_parser::cleanup_old_signatures();
+        //     println!("[Triton] Memory pressure cleanup triggered after {} messages", message_count);
+        // }
 
         // Clone with size check to prevent memory leaks
-        let message_size = message.update_oneof.as_ref()
-            .map(|update| {
-                match update {
-                    UpdateOneof::Transaction(tx) => tx.transaction.as_ref()
-                        .map(|t| t.transaction.as_ref()
-                            .map(|tx| tx.signatures.len() + tx.message.as_ref()
-                                .map(|msg| msg.instructions.len()).unwrap_or(0))
-                            .unwrap_or(0))
-                        .unwrap_or(0),
-                    _ => 0
-                }
+        let message_size = message
+            .update_oneof
+            .as_ref()
+            .map(|update| match update {
+                UpdateOneof::Transaction(tx) => tx
+                    .transaction
+                    .as_ref()
+                    .map(|t| {
+                        t.transaction
+                            .as_ref()
+                            .map(|tx| {
+                                tx.signatures.len()
+                                    + tx.message
+                                        .as_ref()
+                                        .map(|msg| msg.instructions.len())
+                                        .unwrap_or(0)
+                            })
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(0),
+                _ => 0,
             })
             .unwrap_or(0);
-        
+
         if message_size > 1000 {
             println!("[Triton] WARNING: Large message detected ({} items), skipping to prevent memory leak", message_size);
             continue;
@@ -200,20 +241,20 @@ pub async fn subscribe_and_print_triton(
 
         let message = message.clone();
         let feed_id = feed_id.to_string(); // OPTIMIZATION: Clone feed_id for async block
-        
+
         let message_clone_start = std::time::Instant::now();
         let message_clone_time = message_clone_start.elapsed();
-        
+
         // Direct processing without spawn overhead
         let processing_start = std::time::Instant::now();
-        
+
         // CRITICAL FIX: Use worker pool instead of direct processing
         let parse_start = std::time::Instant::now();
         if let Err(e) = TRITON_WORKER_POOL.submit(message.clone(), feed_id.clone()) {
             eprintln!("[Triton] Failed to submit task to worker pool: {}", e);
         }
         let parse_time = parse_start.elapsed();
-        
+
         let processing_time = processing_start.elapsed();
         #[cfg(feature = "verbose_logging")]
         {
@@ -221,13 +262,17 @@ pub async fn subscribe_and_print_triton(
             println!("[{}] - [Triton] CLIENT PROFILE - message_clone: {:.2?}, parse: {:.2?}, total: {:.2?}", 
                 now.format("%Y-%m-%d %H:%M:%S%.3f"), message_clone_time, parse_time, processing_time);
         }
-        
+
         // Explicitly drop large data structures
         drop(message);
         drop(feed_id);
     }
 
-    println!("[Triton] Stream ended gracefully after {} messages", message_count);
+    #[cfg(feature = "verbose_logging")]
+    println!(
+        "[Triton] Stream ended gracefully after {} messages",
+        message_count
+    );
     Ok(())
 }
 
@@ -239,15 +284,26 @@ pub async fn subscribe_with_retry_triton(
     let mut attempt = 0;
     loop {
         attempt += 1;
-        println!("[Triton] Attempt {} to connect and subscribe for feed {}...", attempt, feed_id);
+        #[cfg(feature = "verbose_logging")]
+        println!(
+            "[Triton] Attempt {} to connect and subscribe for feed {}...",
+            attempt, feed_id
+        );
         let result = subscribe_and_print_triton(endpoint, config.clone(), feed_id).await; // OPTIMIZATION: Pass feed_id
         match result {
             Ok(_) => {
-                println!("[Triton] Subscription ended gracefully for feed {}.", feed_id);
+                #[cfg(feature = "verbose_logging")]
+                println!(
+                    "[Triton] Subscription ended gracefully for feed {}.",
+                    feed_id
+                );
                 break;
             }
             Err(e) => {
-                eprintln!("[Triton] Subscription error for feed {}: {}. Retrying in 5 seconds...", feed_id, e);
+                eprintln!(
+                    "[Triton] Subscription error for feed {}: {}. Retrying in 5 seconds...",
+                    feed_id, e
+                );
                 sleep(Duration::from_secs(5)).await;
             }
         }
@@ -258,37 +314,48 @@ pub async fn subscribe_with_retry_triton(
 // OPTIMIZATION: Enhanced client for multiple feeds
 pub async fn setup_multiple_triton_feeds() -> Result<(), Box<dyn std::error::Error>> {
     let config = GLOBAL_CONFIG.get().expect("Config not initialized");
-    
+
     // Setup multiple feeds from config
     let feeds = vec![
-        ("triton_primary", &config.grpc_endpoint1),
-        ("triton_backup", &config.grpc_endpoint2),
+        ("corvus", &config.grpc_endpoint1),
+        ("asuga", &config.grpc_endpoint2),
     ];
-    
+
     for (feed_id, endpoint) in feeds {
-        println!("[TRITON] Setting up feed: {} with endpoint: {}", feed_id, endpoint);
+        #[cfg(feature = "verbose_logging")]
+        println!(
+            "[TRITON] Setting up feed: {} with endpoint: {}",
+            feed_id, endpoint
+        );
         // Setup individual feed connection
         setup_triton_feed(feed_id, endpoint).await?;
     }
-    
+
     Ok(())
 }
 
 // OPTIMIZATION: Individual feed setup
-async fn setup_triton_feed(feed_id: &str, endpoint: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn setup_triton_feed(
+    feed_id: &str,
+    endpoint: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let config = GLOBAL_CONFIG.get().expect("Config not initialized");
-    
+
     // Clone strings for async block
     let feed_id_cloned = feed_id.to_string();
     let endpoint_cloned = endpoint.to_string();
-    
+
     // Start the subscription for this feed
     tokio::spawn(async move {
-        if let Err(e) = subscribe_with_retry_triton(&endpoint_cloned, Arc::new(config.clone()), &feed_id_cloned).await {
+        if let Err(e) =
+            subscribe_with_retry_triton(&endpoint_cloned, Arc::new(config.clone()), &feed_id_cloned)
+                .await
+        {
             eprintln!("[TRITON] Feed {} failed: {}", feed_id_cloned, e);
         }
     });
-    
+
+    #[cfg(feature = "verbose_logging")]
     println!("[TRITON] Feed {} connected to {}", feed_id, endpoint);
     Ok(())
 }
@@ -296,34 +363,43 @@ async fn setup_triton_feed(feed_id: &str, endpoint: &str) -> Result<(), Box<dyn 
 // OPTIMIZATION: Test network latency between endpoints
 pub async fn test_endpoint_latency() -> Result<(), Box<dyn std::error::Error>> {
     let config = GLOBAL_CONFIG.get().expect("Config not initialized");
-    
+
     println!("[TRITON] Testing network latency between endpoints...");
-    
+
     let endpoints = vec![
-        ("triton_primary", &config.grpc_endpoint1),
-        ("triton_backup", &config.grpc_endpoint2),
+        ("corvus", &config.grpc_endpoint1),
+        ("asuga", &config.grpc_endpoint2),
     ];
-    
+
     for (feed_id, endpoint) in endpoints {
         let start = std::time::Instant::now();
-        
+
         // Try to establish a connection to test latency
         match Endpoint::from_shared(endpoint.to_string()) {
             Ok(channel_endpoint) => {
                 let channel = channel_endpoint.connect().await;
                 let latency = start.elapsed();
-                
+
                 match channel {
-                    Ok(_) => println!("[TRITON] {} ({}) - Connection successful, latency: {:.2?}", 
-                        feed_id, endpoint, latency),
-                    Err(e) => println!("[TRITON] {} ({}) - Connection failed: {} (latency: {:.2?})", 
-                        feed_id, endpoint, e, latency),
+                    Ok(_) => println!(
+                        "[TRITON] {} ({}) - Connection successful, latency: {:.2?}",
+                        feed_id, endpoint, latency
+                    ),
+                    Err(e) => println!(
+                        "[TRITON] {} ({}) - Connection failed: {} (latency: {:.2?})",
+                        feed_id, endpoint, e, latency
+                    ),
                 }
             }
-            Err(e) => println!("[TRITON] {} ({}) - Invalid endpoint: {} (latency: {:.2?})", 
-                feed_id, endpoint, e, start.elapsed()),
+            Err(e) => println!(
+                "[TRITON] {} ({}) - Invalid endpoint: {} (latency: {:.2?})",
+                feed_id,
+                endpoint,
+                e,
+                start.elapsed()
+            ),
         }
     }
-    
+
     Ok(())
 }

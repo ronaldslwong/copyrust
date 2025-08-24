@@ -11,7 +11,7 @@ use crate::build_tx::pump_swap::PumpAmmAccounts;
 use crate::build_tx::pump_swap::SwapDirection;
 use crate::build_tx::utils::get_account;
 use crate::utils::logger::{log_event, EventType};
-use solana_program::instruction::Instruction;
+use solana_program::instruction::{Instruction, AccountMeta};
 use solana_sdk::pubkey::Pubkey;
 use std::sync::Arc;
 use std::time::Instant;
@@ -69,8 +69,7 @@ pub fn axiom_pump_swap_build_buy_tx(
 }
 
 pub fn axiom_pump_fun_build_buy_tx(
-    account_keys: &[Vec<u8>],
-    accounts: &[u8],
+    instruction_accounts: &[AccountMeta],
     sig_bytes_input: Option<Arc<Vec<u8>>>,
     detection_time: Instant,
     amount: u64,
@@ -86,7 +85,8 @@ pub fn axiom_pump_fun_build_buy_tx(
     };
 
     let slippage_factor = 1.0 + slippage_basis_points as f64 / 10000.0;
-    let mut pump_fun_accounts = get_pump_fun_instruction_accounts(&account_keys, &accounts);
+    let mut pump_fun_accounts = get_pump_fun_instruction_accounts(&instruction_accounts);
+    println!("pump_fun_accounts: {:?}", pump_fun_accounts);
 
     let bonding_curve_state = get_bonding_curve_state(&pump_fun_accounts);
 
@@ -106,9 +106,12 @@ pub fn axiom_pump_fun_build_buy_tx(
         limit_quote_amount,
     );
 
+    // Get mint from instruction account 2 (based on the debug output we saw)
+    let mint = instruction_accounts[2].pubkey;
+
     (
         buy_instruction,
-        get_account(account_keys, accounts, 2),
+        mint,
         limit_quote_amount,
         pump_fun_accounts,
     )

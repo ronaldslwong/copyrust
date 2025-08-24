@@ -108,6 +108,7 @@ pub fn create_instruction_rpc(
     instructions: Vec<Instruction>,
     tip_amount: u64,
     nonce_account: &Pubkey,
+    token_2022: bool,
 ) -> Vec<Instruction> {
     // let limit_ix = compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu_limit);
     let cu_price_tip = ((tip_amount / cu_limit as u64) as f64 * 1_000_000.0) as u64;
@@ -115,7 +116,7 @@ pub fn create_instruction_rpc(
 
     let keypair = get_wallet_keypair();
 
-    let ata_ix = create_ata(&keypair, &keypair.pubkey(), &mint);
+    let ata_ix = create_ata(&keypair, &keypair.pubkey(), &mint, token_2022);
 
     let advance_nonce_ix = system_instruction::advance_nonce_account(
         nonce_account,

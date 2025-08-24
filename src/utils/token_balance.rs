@@ -25,7 +25,7 @@ pub fn get_token_balance_change_for_mint(
             solana_transaction_status::option_serializer::OptionSerializer::Some(vec) => {
                 vec.iter()
                     .find(|b| Pubkey::from_str(&b.mint).ok().as_ref() == Some(mint))
-                    .and_then(|b| b.ui_token_amount.amount.parse::<u64>().ok())
+                    .and_then(|b| b.ui_token_amount.ui_amount.map(|amount| amount as u64))
             }
             _ => None,
         }

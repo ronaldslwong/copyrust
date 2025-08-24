@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use url::Url;
 use futures::{StreamExt, stream::SplitStream};
@@ -45,7 +44,7 @@ pub async fn initialize_tip_stream() -> Result<(), Box<dyn std::error::Error>> {
     let (ws_stream, _) = connect_async(url).await?;
     println!("WebSocket connection established");
     
-    let (write, read) = ws_stream.split();
+    let (_write, read) = ws_stream.split();
     
     // Spawn a task to handle incoming messages
     let tip_data_arc = Arc::clone(&TIP_DATA);

@@ -11,6 +11,8 @@ use crate::build_tx::ray_cpmm::RaydiumCpmmPoolState;
 use crate::build_tx::pump_swap::PumpAmmAccounts;
 use crate::build_tx::pump_fun::PumpFunAccounts;
 use crate::build_tx::ray_cpmm::RayCpmmSwapAccounts;
+use crate::build_tx::meteora_bonding::MeteoraBondingSwapAccounts;
+
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use std::sync::Arc;
@@ -45,6 +47,7 @@ pub enum ProgramType {
     AxiomPumpSwap,
     AxiomPumpFun,
     RaydiumCpmm,
+    // MeteoraBonding,
 }
 
 // Create a static HashMap for O(1) program ID lookups
@@ -54,6 +57,7 @@ static PROGRAM_ID_MAP: Lazy<HashMap<[u8; 32], ProgramType>> = Lazy::new(|| {
     map.insert(*AXIOM_PUMP_SWAP_PROGRAM_ID_BYTES, ProgramType::AxiomPumpSwap);
     map.insert(*AXIOM_PUMP_FUN_PROGRAM_ID_BYTES, ProgramType::AxiomPumpFun);
     map.insert(*RAYDIUM_CPMM_PROGRAM_ID_BYTES, ProgramType::RaydiumCpmm);
+    // map.insert(*METEORA_BONDING_PROGRAM_ID_BYTES, ProgramType::MeteoraBonding);
     map
 });
 
@@ -141,6 +145,7 @@ pub struct TxWithPubkey {
     pub pump_swap_accounts: Option<PumpAmmAccounts>,
     pub pump_fun_accounts: Option<PumpFunAccounts>,
     pub raydium_cpmm_accounts: Option<RayCpmmSwapAccounts>,
+    pub meteora_bonding_accounts: Option<MeteoraBondingSwapAccounts>,
     pub ray_cpmm_pool_state: Option<Pubkey>,
     pub send_sig: String,
     pub send_time: Instant,
@@ -161,6 +166,7 @@ impl TxWithPubkey {
             pump_swap_accounts: None,
             pump_fun_accounts: None,
             raydium_cpmm_accounts: None,
+            meteora_bonding_accounts: None,
             ray_cpmm_pool_state: None,
             send_sig: String::new(),
             send_time: Instant::now(),
@@ -294,6 +300,7 @@ pub fn setup_arpc_crossbeam_worker() {
             let mut pump_fun_accounts = PumpFunAccounts::default();
             let mut tx_with_pubkey: Option<TxWithPubkey> = None;
             let mut raydium_cpmm_accounts = RayCpmmSwapAccounts::default();
+            let mut meteora_bonding_accounts = MeteoraBondingSwapAccounts::default();
 
             let parse_start = Instant::now();
             // --- OPTIMIZED INSTRUCTION MATCHING ---
@@ -368,9 +375,28 @@ pub fn setup_arpc_crossbeam_worker() {
                             },
                             ProgramType::AxiomPumpFun => {
                                 let axiom_fun_start = Instant::now();
+                                
+                                // Convert account indices to AccountMeta objects
+                                let instruction_accounts: Vec<solana_program::instruction::AccountMeta> = instr.accounts.iter()
+                                    .map(|&account_index| {
+                                        if (account_index as usize) < parsed.account_keys.len() {
+                                            solana_program::instruction::AccountMeta {
+                                                pubkey: solana_sdk::pubkey::Pubkey::try_from(parsed.account_keys[account_index as usize].as_slice()).unwrap_or_default(),
+                                                is_signer: false, // We don't have this info in ARPC format
+                                                is_writable: false, // We don't have this info in ARPC format
+                                            }
+                                        } else {
+                                            solana_program::instruction::AccountMeta {
+                                                pubkey: solana_sdk::pubkey::Pubkey::default(),
+                                                is_signer: false,
+                                                is_writable: false,
+                                            }
+                                        }
+                                    })
+                                    .collect();
+                                
                                 (buy_instruction, mint, target_token_buy, pump_fun_accounts) = axiom_pump_fun_build_buy_tx(
-                                    &parsed.account_keys,
-                                    &instr.accounts,
+                                    &instruction_accounts,
                                     parsed.sig_bytes.clone(),
                                     parsed.detection_time,
                                     buy_sol_lamports,
@@ -395,7 +421,7 @@ pub fn setup_arpc_crossbeam_worker() {
                                     buy_sol_lamports,
                                     config.buy_slippage_bps,
                                 );
-                                                                    let raydium_cpmm_time = raydium_cpmm_start.elapsed();
+                                    let raydium_cpmm_time = raydium_cpmm_start.elapsed();
                                     println!("[PROFILE][{}] Raydium CPMM processing: {:.2?}", sig_str, raydium_cpmm_time);
                                 if mint != Pubkey::default() { //buy tx
                                     send_tx = true;
@@ -406,6 +432,44 @@ pub fn setup_arpc_crossbeam_worker() {
                                     break; // Early exit after match
                                 }
                             },
+                            // ProgramType::MeteoraBonding => {
+                            //     if &data[0..8] == [0xF8, 0xC6, 0x9E, 0x91, 0xE1, 0x75, 0x87, 0xC8] {
+                            //         let meteora_bonding_start = Instant::now();
+                            //         match meteora_bonding_build_buy_tx(
+                            //             &parsed.account_keys,
+                            //             &instr.accounts,
+                            //             parsed.sig_bytes.clone(),
+                            //             parsed.detection_time,
+                            //             data,
+                            //             buy_sol_lamports,
+                            //             config.buy_slippage_bps,
+                            //         ) {
+                            //             Ok((instruction, mint_pubkey, token_amount, accounts)) => {
+                            //                 buy_instruction = instruction;
+                            //                 mint = mint_pubkey;
+                            //                 target_token_buy = token_amount;
+                            //                 meteora_bonding_accounts = accounts;
+                                            
+                            //                 let meteora_bonding_time = meteora_bonding_start.elapsed();
+                            //                 println!("[PROFILE][{}] Meteora Bonding Curve processing: {:.2?}", sig_str, meteora_bonding_time);
+                                            
+                            //                 if target_token_buy != 0 {
+                            //                     send_tx = true;
+                            //                     let mut tx = TxWithPubkey::default();
+                            //                     tx.tx_type = "meteora_bonding".to_string();
+                            //                     tx.meteora_bonding_accounts = Some(meteora_bonding_accounts.clone());
+                            //                     tx_with_pubkey = Some(tx);
+                            //                     break; // Early exit after match
+                            //                 }
+                            //             }
+                            //             Err(e) => {
+                            //                 eprintln!("[ERROR] Failed to build Meteora bonding buy transaction: {:?}", e);
+                            //                 WORKER_ERRORS.fetch_add(1, Ordering::Relaxed);
+                            //                 continue;
+                            //             }
+                            //         }
+                            //     }
+                            // },
                         }
                     }
                     #[cfg(feature = "verbose_logging")]
@@ -559,6 +623,7 @@ pub fn setup_arpc_crossbeam_worker() {
                         now.format("%Y-%m-%d %H:%M:%S%.3f"), sig_str);
                 }
             }
+
             let loop_total = worker_total_start.elapsed();
             #[cfg(feature = "verbose_logging")]
             println!("[BENCH][sig={}] Total loop time: {:.2?}", sig_str, loop_total);

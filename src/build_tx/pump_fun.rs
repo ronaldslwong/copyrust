@@ -228,22 +228,12 @@ pub fn build_sell_instruction(
     sell_token_amount: u64,
     slippage_basis_points: u64,
     pump_fun_accounts: &PumpFunAccounts,
-    bonding_curve_state: BondingCurve,
 ) -> Instruction {
-
-    let slippage_factor = 1.0 - slippage_basis_points as f64 / 10000.0;
-
-    let (receive_sol_amount, _) = calculate_pump_fun_swap_amount(
-        SwapDirection::Sell,
-        bonding_curve_state,
-        sell_token_amount,
-        0,
-    );
 
     let sell_instruction = build_pump_fun_instruction(
         &pump_fun_accounts,
         SwapDirection::Sell,
-        (receive_sol_amount as f64 * slippage_factor) as u64,
+        0,
         sell_token_amount,
     );
 
@@ -254,15 +244,15 @@ pub fn build_sell_instruction(
 /// Fast way to build PumpFunAccounts by leveraging the default struct
 /// Only sets the dynamic fields, uses defaults for static constants
 pub fn get_instruction_accounts(
-    account_keys: &[Vec<u8>],
-    accounts: &[u8],
+    instruction_accounts: &[AccountMeta]
 ) -> PumpFunAccounts {
     // Start with default (which has all the static constants pre-filled)
     let mut pump_fun_accounts = PumpFunAccounts::default();
     
     // Only set the dynamic fields that need to be computed
-    let mint = get_account(&account_keys, &accounts,   2);
-    let bonding_curve_pda = get_account(&account_keys, &accounts, 3); // Adjust index as needed
+    let mint = instruction_accounts[2].pubkey;
+    println!("mint: {:?}", mint);
+    let bonding_curve_pda = instruction_accounts[3].pubkey; // Adjust index as needed
     let user = get_wallet_keypair().pubkey();
     
     // Compute derived addresses
@@ -281,6 +271,7 @@ pub fn get_instruction_accounts(
     pump_fun_accounts.user = user;
     pump_fun_accounts.global_volume_accumulator = global_volume_accumulator_pda();
     pump_fun_accounts.user_volume_accumulator = user_volume_accumulator_pda(&user);
+    pump_fun_accounts.creator_fee_vault = instruction_accounts[9].pubkey;
     // pump_fun_accounts.creator_fee_vault = creator_fee_vault;
     
     pump_fun_accounts

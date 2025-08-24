@@ -24,6 +24,7 @@ pub enum SwapDirection {
 pub fn get_account(account_keys: &[Vec<u8>], accounts: &[u8], index: usize) -> Pubkey {
     if accounts.len() > index {
         let idx = accounts[index] as usize;
+        println!("idx: {:?}", idx);
         if account_keys.len() > idx {
             Pubkey::try_from(account_keys[idx].as_slice()).unwrap_or_default()
         } else {
@@ -33,6 +34,7 @@ pub fn get_account(account_keys: &[Vec<u8>], accounts: &[u8], index: usize) -> P
         Pubkey::default()
     }
 }
+
 
 pub fn get_pool_accounts(
     mint: Pubkey,
@@ -198,3 +200,12 @@ pub fn get_pool_vault_amount(
 
     Ok((base_amount, quote_amount))
 } 
+
+pub fn get_buy_swap_amount(
+    grpc_sol: u64,
+    grpc_token: u64,
+    buy_sol: u64,
+) -> Result<u64, Box<dyn Error>> {
+    let buy_amount = (grpc_token as f64 / grpc_sol as f64 * buy_sol as f64) as u64;
+    Ok(buy_amount)
+}

@@ -5,5 +5,8 @@ pub mod raydium_cpmm;
 pub mod consts;
 pub mod axiom;
 pub mod monitoring;
+pub mod meteora_bonding;
+pub mod heaven;
+pub mod boop_fun;
 // pub mod photon;
 // Add more as needed 

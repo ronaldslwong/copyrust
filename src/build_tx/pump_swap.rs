@@ -329,24 +329,23 @@ pub fn get_pump_swap_amount(
 } 
 
 pub fn get_instruction_accounts(
-    account_keys: &[Vec<u8>],
-    accounts: &[u8],
+    instruction_accounts: &[AccountMeta]
 ) -> PumpAmmAccounts {
 
-    let mint = get_account(account_keys, accounts, 3);
+    let mint = instruction_accounts[3].pubkey;
     let base_ata = spl_associated_token_account::get_associated_token_address(&get_wallet_keypair().pubkey(), &mint);
     let quote_ata = spl_associated_token_account::get_associated_token_address(&get_wallet_keypair().pubkey(), &pump_swap_constants::WSOL);
  
     PumpAmmAccounts {
-        pool: get_account(account_keys, accounts, 0),
+        pool: instruction_accounts[0].pubkey,
         user: get_wallet_keypair().pubkey(),
         global_config: pump_swap_constants::PUMP_SWAP_GLOBAL_CONFIG,
         base_mint: mint,
         quote_mint: pump_swap_constants::WSOL,
         user_base_token_account: base_ata,
         user_quote_token_account: quote_ata,
-        pool_base_token_account: get_account(account_keys, accounts, 7),
-        pool_quote_token_account: get_account(account_keys, accounts, 8),
+        pool_base_token_account: instruction_accounts[7].pubkey,
+        pool_quote_token_account: instruction_accounts[8].pubkey,
         protocol_fee_recipient: pump_swap_constants::PUMP_SWAP_PROTOCOL_FEE_RECIPIENT,
         protocol_fee_token_account: pump_swap_constants::PUMP_SWAP_PROTOCOL_FEE_TOKEN_ACCOUNT,
         base_token_program: spl_token::ID,
@@ -355,8 +354,8 @@ pub fn get_instruction_accounts(
         associated_token_program: pump_swap_constants::PUMP_SWAP_ASSOCIATED_TOKEN_PROGRAM,
         event_authority: pump_swap_constants::PUMP_SWAP_EVENT_AUTHORITY,
         pump_program: pump_swap_constants::PUMP_SWAP_PROGRAM_ID,
-        coin_creator_vault_ata: get_account(account_keys, accounts, 17),
-        coin_creator_vault_authority: get_account(account_keys, accounts, 18),
+        coin_creator_vault_ata: instruction_accounts[17].pubkey,
+        coin_creator_vault_authority: instruction_accounts[18].pubkey,
         global_volume_accumulator: global_volume_accumulator_pda(),
         user_volume_accumulator: user_volume_accumulator_pda(&get_wallet_keypair().pubkey()),
     }

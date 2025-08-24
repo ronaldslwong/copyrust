@@ -11,7 +11,7 @@ use solana_sdk::signature::Signer;
 use crate::send_tx::rpc::{initialize_send_rpc_clients};
 use crate::utils::logger::setup_event_logger;
 use crate::triton_grpc::crossbeam_worker::setup_crossbeam_worker;
-use crate::grpc::arpc_parser::setup_arpc_crossbeam_worker;
+// ARPC is decommissioned - no longer importing ARPC functions
 use crate::send_tx::rpc::keep_blockhash_fresh;
 use solana_sdk::hash::Hash;
 use tokio::sync::RwLock;
@@ -40,6 +40,16 @@ pub async fn initialize() -> (Config, Vec<DexPairData>) {
         Ok(_) => {
             let nonce_account = get_nonce_account();
             println!("Nonce account loaded: {}", nonce_account.to_string());
+            
+            // NEW: Start nonce blockhash prefetching after nonce accounts are loaded
+            if let Err(e) = crate::init::wallet_loader::start_nonce_blockhash_prefetching() {
+                eprintln!("Failed to start nonce blockhash prefetching: {}. Continuing without prefetching.", e);
+            } else {
+                println!("Nonce blockhash prefetching started");
+            }
+            
+            // NEW: Initialize nonce refresh system
+            crate::triton_grpc::crossbeam_worker::initialize_nonce_refresh_system();
         }
         Err(e) => {
             eprintln!("Failed to load nonce accounts: {}. Continuing without nonce accounts.", e);
@@ -66,11 +76,13 @@ pub async fn initialize() -> (Config, Vec<DexPairData>) {
     setup_event_logger();
     println!("Event logger initialized");
 
-    setup_crossbeam_worker();
-    println!("GRPC Crossbeam worker initialized");
+    match std::panic::catch_unwind(|| setup_crossbeam_worker()) {
+        Ok(_) => println!("GRPC Crossbeam worker initialized"),
+        Err(e) => eprintln!("GRPC Crossbeam worker initialization failed: {:?}", e),
+    }
 
-    setup_arpc_crossbeam_worker();
-    println!("ARPC crossbeam worker initialized");
+    // ARPC is decommissioned - no longer setting up ARPC worker
+    println!("ARPC worker skipped (decommissioned)");
 
     init_jito_grpc_sender(&config.jito_url).await;
     println!("Jito gRPC sender initialized");
@@ -87,7 +99,7 @@ pub async fn initialize() -> (Config, Vec<DexPairData>) {
 
     // Initialize tip stream
     match crate::init::tip_stream::initialize_tip_stream().await {
-        Ok(_) => println!("Tip stream initialized successfully"),
+        Ok(_) => println!("Tip stream initialized"),
         Err(e) => eprintln!("Failed to initialize tip stream: {}", e),
     }
 

@@ -208,9 +208,12 @@ pub async fn send_tx_astralane(tx: &Transaction) -> Result<String, Box<dyn std::
         println!("[ASTRALANE_DEBUG] 🔄 Attempt {}/{}", attempt, max_retries);
         
         // Use our persistent client to keep connections warm
-        response_result = Some(get_isahc_client()
-            .post_async(&config.astralane_url, request_json.clone())
-            .await);
+        let request = isahc::Request::post(&config.astralane_url)
+            .header("Content-Type", "application/json")
+            .body(request_json.clone())
+            .unwrap();
+        
+        response_result = Some(get_isahc_client().send_async(request).await);
         
         match &response_result {
             Some(Ok(_)) => {

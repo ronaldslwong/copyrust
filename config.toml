@@ -1,9 +1,9 @@
 #grpcEndpoint = "http://us.grpc.asuga.io:10000"
 #grpcEndpoint = "http://grpc.corvus-labs.io:10101"
-#arpcEndpoint = "http://arpc.corvus-labs.io:20202"
-grpcEndpoint1 = "http://86.105.224.13:10101"
-grpcEndpoint2 = "http://ny.grpc.asuga.io:10000"  # Backup endpoint - can be same or different
-arpcEndpoint = "http://86.105.224.13:20202"
+arpcEndpoint = "http://nyc.corvus-labs.io:20202"
+grpcEndpoint1 = "http://nyc.corvus-labs.io:10101"
+grpcEndpoint2 = "http://va.grpc.asuga.io:10000"  # Backup endpoint - can be same or different
+#arpcEndpoint = "http://86.105.224.13:20202"
 #rpcEndpoint = "http://us.rpc.asuga.io"
 #rpcEndpoint = "http://rpc.corvus-labs.io"
 rpcEndpoint = "http://86.105.224.13:8899"
@@ -13,7 +13,7 @@ sendRPC =[
   "http://86.105.224.13:8899",
 ]
 
-waitTime = 3.0
+waitTime = 1.0
 tip_stream = "wss://api.nozomi.temporal.xyz/tip_stream"
 dynamic_tip_percentile = 50
 
@@ -22,7 +22,7 @@ birdEyeApi = ""
 birdEyeNumToken = 50
 
 buy_sol = 0.0001
-buy_slippage_bps = 2000
+buy_slippage_bps = 5000
 sell_slippage_bps = 500
 
 nextblock_url = "http://fra.nextblock.io"
@@ -78,10 +78,11 @@ accountsMonitor = [
   #"suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK",
   #"suqh5sH7r8HyJ7q8scBimULPkPpA557prMG47xCHQfK",
 
-  "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
+  #"LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
   #"CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
   #"CpKdPv3L8HGcgzbBNY9tDH3CNB7DavXma86VfEfSVfEg",
-  #"AxiomfHaWDemCFBLBayqnEnNwE6b7B2Qz3UmzMpgbMG6",
+  "AxiomfHaWDemCFBLBayqnEnNwE6b7B2Qz3UmzMpgbMG6",
+  #"dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN", # Meteora Bonding Program
 ]
 
 mintsMonitor = [

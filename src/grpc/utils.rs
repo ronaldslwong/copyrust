@@ -1,6 +1,5 @@
 use solana_sdk::pubkey::Pubkey;
 use crate::utils::token_balance::get_token_balance_change_for_mint;
-use crate::grpc::arpc_worker::GLOBAL_TX_MAP;
 use std::time::Instant;
 use bs58;
 use std::str::FromStr;
@@ -67,22 +66,6 @@ pub fn calculate_token_amount_change(
     Some(change)
 }
 
-/// Calculate the token amount change for a transaction using the mint from GLOBAL_TX_MAP
-/// This function looks up the transaction in GLOBAL_TX_MAP to get the mint information
-pub fn calculate_token_amount_change_from_map(
-    parsed_tx: &crate::triton_grpc::crossbeam_worker::ParsedTx,
-) -> Option<i64> {
-    // Extract signature from ParsedTx
-    let sig_bytes = parsed_tx.sig_bytes.as_ref()?;
-    
-    // Look up the transaction in GLOBAL_TX_MAP to get the mint
-    let tx_data = GLOBAL_TX_MAP.get(sig_bytes)?;
-    let mint = &tx_data.mint;
-    
-    // Calculate the token amount change
-    calculate_token_amount_change(parsed_tx, mint)
-}
-
 /// Get detailed token balance information for a transaction
 /// Returns (pre_balance, post_balance, change) for the specified mint
 pub fn get_detailed_token_balance_info(
@@ -138,8 +121,9 @@ pub fn calculate_token_amount_change_auto_detect(
         let post_balance = post_balances.iter().find(|b| b.mint == *mint_str);
         
         if let Some(post) = post_balance {
-            let pre_amount = pre_balance.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
-            let post_amount = post.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
+            // FIX: Use ui_amount (properly scaled) instead of amount (raw, unscaled)
+            let pre_amount = pre_balance.ui_token_amount.ui_amount.unwrap_or(0.0) as u64;
+            let post_amount = post.ui_token_amount.ui_amount.unwrap_or(0.0) as u64;
             
             let change = post_amount as i64 - pre_amount as i64;
             
@@ -169,7 +153,8 @@ pub fn calculate_token_amount_change_auto_detect(
         let pre_balance = pre_balances.iter().find(|b| b.mint == *mint_str);
         
         if pre_balance.is_none() {
-            let post_amount = post_balance.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
+            // FIX: Use ui_amount (properly scaled) instead of amount (raw, unscaled)
+            let post_amount = post_balance.ui_token_amount.ui_amount.unwrap_or(0.0) as u64;
             if post_amount > 0 {
                 return Some((mint, post_amount as i64));
             }
@@ -210,8 +195,9 @@ pub fn get_detailed_token_balance_info_auto_detect(
         let post_balance = post_balances.iter().find(|b| b.mint == *mint_str);
         
         if let Some(post) = post_balance {
-            let pre_amount = pre_balance.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
-            let post_amount = post.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
+            // FIX: Use ui_amount (properly scaled) instead of amount (raw, unscaled)
+            let pre_amount = pre_balance.ui_token_amount.ui_amount.unwrap_or(0.0) as u64;
+            let post_amount = post.ui_token_amount.ui_amount.unwrap_or(0.0) as u64;
             
             let change = post_amount as i64 - pre_amount as i64;
             
@@ -241,7 +227,8 @@ pub fn get_detailed_token_balance_info_auto_detect(
         let pre_balance = pre_balances.iter().find(|b| b.mint == *mint_str);
         
         if pre_balance.is_none() {
-            let post_amount = post_balance.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
+            // FIX: Use ui_amount (properly scaled) instead of amount (raw, unscaled)
+            let post_amount = post_balance.ui_token_amount.ui_amount.unwrap_or(0.0) as u64;
             if post_amount > 0 {
                 return Some((mint, 0, post_amount, post_amount as i64));
             }
@@ -277,8 +264,9 @@ pub fn calculate_token_amount_change_from_grpc_data(
         let post_balance = post_token_balances.iter().find(|b| b.mint == *mint_str);
         
         if let Some(post) = post_balance {
-            let pre_amount = pre_balance.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
-            let post_amount = post.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
+            // FIX: Use ui_amount (properly scaled) instead of amount (raw, unscaled)
+            let pre_amount = pre_balance.ui_token_amount.ui_amount.unwrap_or(0.0) as u64;
+            let post_amount = post.ui_token_amount.ui_amount.unwrap_or(0.0) as u64;
             
             let change = post_amount as i64 - pre_amount as i64;
             
@@ -308,7 +296,7 @@ pub fn calculate_token_amount_change_from_grpc_data(
         let pre_balance = pre_token_balances.iter().find(|b| b.mint == *mint_str);
         
         if pre_balance.is_none() {
-            let post_amount = post_balance.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
+            let post_amount = post_balance.ui_token_amount.ui_amount.unwrap_or(0.0) as u64;
             if post_amount > 0 {
                 return Some((mint, post_amount as i64));
             }
